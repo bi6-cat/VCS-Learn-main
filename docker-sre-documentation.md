@@ -25,6 +25,12 @@
   - [2.4 Cấu hình Keepalived](#24-cấu-hình-keepalived)
   - [2.5 Docker Compose – Toàn bộ stack](#25-docker-compose--toàn-bộ-stack)
   - [2.6 Hướng dẫn triển khai chi tiết](#26-hướng-dẫn-triển-khai-chi-tiết)
+- [Phần 3 – Cấu hình service chạy Docker Container](#phần-3--cấu-hình-service-chạy-docker-container)
+  - [3.1 Docker Container và Image nâng cao](#31-docker-container-và-image-nâng-cao)
+  - [3.2 Docker Compose – Cấu hình chi tiết](#32-docker-compose--cấu-hình-chi-tiết)
+  - [3.3 Docker Swarm](#33-docker-swarm)
+  - [3.4 Docker Stack](#34-docker-stack)
+  - [3.5 So sánh các phương thức triển khai](#35-so-sánh-các-phương-thức-triển-khai)
 
 ---
 
@@ -1259,6 +1265,851 @@ sudo ss -tlnp | grep -E "80|8404"
 
 # Reset container bị stuck
 docker compose restart haproxy-master
+```
+
+---
+
+## Phần 3 – Cấu hình service chạy Docker Container
+
+### 3.1 Docker Container và Image nâng cao
+
+Phần này đi sâu vào các kỹ thuật vận hành container và quản lý image ở cấp độ production, bổ sung cho kiến thức cơ bản ở Phần 1.
+
+#### Multi-stage Build – tối ưu Image size
+
+Multi-stage build cho phép dùng nhiều `FROM` trong một Dockerfile. Mỗi stage có thể copy artifact từ stage trước, giúp image cuối cùng chỉ chứa những gì cần thiết để chạy (không bao gồm compiler, build tool).
+
+```dockerfile
+# ── Stage 1: Build ────────────────────────────────────────────
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+RUN npm run build          # tạo ra thư mục dist/
+
+# ── Stage 2: Runtime ──────────────────────────────────────────
+FROM nginx:1.25-alpine AS runtime
+# Chỉ copy kết quả build, không copy node_modules hay source code
+COPY --from=builder /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+```bash
+docker build -t my-app:prod .
+docker images my-app
+# my-app:prod   ~25MB  (thay vì ~400MB nếu dùng node image)
+```
+
+#### Image Tagging và Registry workflow
+
+```bash
+# Build với nhiều tag
+docker build \
+  -t registry.example.com/team/app:latest \
+  -t registry.example.com/team/app:v2.1.0 \
+  -t registry.example.com/team/app:v2.1 \
+  .
+
+# Login private registry
+docker login registry.example.com
+
+# Push lên registry
+docker push registry.example.com/team/app:v2.1.0
+docker push registry.example.com/team/app:latest
+
+# Pull về và chạy
+docker pull registry.example.com/team/app:v2.1.0
+docker run -d registry.example.com/team/app:v2.1.0
+```
+
+#### Container Resource Constraints
+
+```bash
+# Giới hạn CPU và RAM
+docker run -d \
+  --name api-server \
+  --cpus="1.5" \               # tối đa 1.5 CPU core
+  --memory="512m" \            # tối đa 512MB RAM
+  --memory-swap="512m" \       # tắt swap (= memory, không dùng swap)
+  --memory-reservation="256m" \# soft limit (cảnh báo khi vượt)
+  --restart unless-stopped \
+  my-api:latest
+
+# Kiểm tra giới hạn đang áp dụng
+docker stats api-server
+docker inspect api-server | grep -A5 '"Memory"'
+```
+
+#### Restart Policy
+
+| Policy | Hành vi |
+|---|---|
+| `no` (mặc định) | Không tự khởi động lại |
+| `on-failure[:max]` | Restart khi exit code ≠ 0; `max` là số lần tối đa |
+| `always` | Luôn restart, kể cả sau `docker stop` rồi reboot host |
+| `unless-stopped` | Như `always` nhưng không restart nếu user chủ động `docker stop` |
+
+```bash
+# Production service
+docker run -d --restart unless-stopped nginx:alpine
+
+# Job có thể fail, thử lại tối đa 3 lần
+docker run --restart on-failure:3 my-job:latest
+```
+
+#### Healthcheck nâng cao
+
+```dockerfile
+# Trong Dockerfile
+HEALTHCHECK \
+  --interval=30s \    # kiểm tra mỗi 30 giây
+  --timeout=5s \      # timeout mỗi lần kiểm tra
+  --start-period=10s \# bỏ qua kết quả unhealthy trong 10s đầu
+  --retries=3 \       # 3 lần unhealthy liên tiếp → trạng thái unhealthy
+  CMD curl -f http://localhost/health || exit 1
+```
+
+```bash
+# Override healthcheck khi chạy
+docker run -d \
+  --health-cmd="pg_isready -U postgres" \
+  --health-interval=10s \
+  --health-retries=5 \
+  postgres:16
+
+# Xem kết quả healthcheck
+docker inspect --format='{{json .State.Health}}' my-container | python3 -m json.tool
+```
+
+#### Prune – dọn dẹp tài nguyên
+
+```bash
+# Xóa container stopped
+docker container prune
+
+# Xóa image không dùng (dangling)
+docker image prune
+
+# Xóa image không có container nào dùng
+docker image prune -a
+
+# Xóa toàn bộ: container stopped, network, image, build cache
+docker system prune -a --volumes
+
+# Xem dung lượng Docker đang chiếm
+docker system df
+```
+
+---
+
+### 3.2 Docker Compose – Cấu hình chi tiết
+
+**Docker Compose** là công cụ định nghĩa và chạy multi-container application bằng một file YAML duy nhất (`docker-compose.yml` hoặc `compose.yml`). Thay vì gõ nhiều lệnh `docker run`, mọi thứ được khai báo declarative và khởi động bằng `docker compose up`.
+
+#### Cấu trúc file Compose
+
+```
+compose.yml
+├── version          ← (tuỳ chọn, bỏ qua với Compose v2)
+├── services         ← định nghĩa các container
+│   ├── <tên-service>
+│   │   ├── image / build
+│   │   ├── ports, environment, volumes
+│   │   ├── networks, depends_on
+│   │   └── healthcheck, restart, deploy
+├── networks         ← khai báo custom network
+└── volumes          ← khai báo named volume
+```
+
+#### Ví dụ: Stack Web App đầy đủ
+
+```yaml
+# compose.yml
+services:
+
+  # ── Database ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-appdb}
+      POSTGRES_USER: ${DB_USER:-appuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}    # lấy từ .env
+    volumes:
+      - pg_data:/var/lib/postgresql/data   # persistent data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-appuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis Cache ───────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: cache
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── Backend API ───────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime           # chỉ dùng stage "runtime" (multi-stage)
+    image: my-api:latest
+    container_name: api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend/uploads:/app/uploads     # user-uploaded files
+    networks:
+      - backend
+      - frontend
+    depends_on:
+      postgres:
+        condition: service_healthy         # chờ postgres healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Frontend (Nginx) ──────────────────────────────────────
+  web:
+    build:
+      context: ./frontend
+    image: my-web:latest
+    container_name: web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      - frontend
+    depends_on:
+      api:
+        condition: service_healthy
+
+networks:
+  backend:
+    driver: bridge
+    internal: true              # không ra internet trực tiếp
+  frontend:
+    driver: bridge
+
+volumes:
+  pg_data:
+    driver: local
+```
+
+#### File .env
+
+```bash
+# .env  (không commit lên git – thêm vào .gitignore)
+DB_NAME=appdb
+DB_USER=appuser
+DB_PASSWORD=super_secret_pass
+REDIS_PASSWORD=redis_secret
+```
+
+#### Các lệnh Docker Compose thường dùng
+
+```bash
+# Khởi động toàn bộ stack (background)
+docker compose up -d
+
+# Chỉ build lại image (không restart container đang chạy)
+docker compose build
+
+# Build và khởi động lại service cụ thể
+docker compose up -d --build api
+
+# Scale một service lên nhiều instance
+docker compose up -d --scale api=3
+
+# Xem trạng thái
+docker compose ps
+
+# Xem log của toàn bộ stack (follow)
+docker compose logs -f
+
+# Xem log của service cụ thể
+docker compose logs -f api
+
+# Chạy lệnh bên trong service đang chạy
+docker compose exec api sh
+
+# Chạy lệnh one-off (tạo container mới, chạy xong xóa)
+docker compose run --rm api python manage.py migrate
+
+# Dừng toàn bộ stack (giữ container và volume)
+docker compose stop
+
+# Dừng và xóa container, network (giữ volume)
+docker compose down
+
+# Dừng, xóa container, network VÀ volume
+docker compose down -v
+
+# Kéo image mới nhất cho tất cả service
+docker compose pull
+
+# Khởi động lại một service
+docker compose restart api
+
+# Xem config đã merge (bao gồm cả .env)
+docker compose config
+```
+
+#### Compose Override – cấu hình theo môi trường
+
+Docker Compose hỗ trợ merge nhiều file, dùng để tách cấu hình giữa dev và production:
+
+```
+compose.yml          ← config chung (base)
+compose.override.yml ← tự động load khi chạy compose (dev)
+compose.prod.yml     ← production overrides (load thủ công)
+```
+
+```yaml
+# compose.override.yml (development)
+services:
+  api:
+    volumes:
+      - ./backend:/app   # mount source code để hot-reload
+    environment:
+      NODE_ENV: development
+    ports:
+      - "9229:9229"      # Node.js debug port
+  postgres:
+    ports:
+      - "5432:5432"      # expose DB ra host để dùng GUI tool
+```
+
+```yaml
+# compose.prod.yml (production)
+services:
+  api:
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
+
+```bash
+# Development (tự động load compose.override.yml)
+docker compose up -d
+
+# Production (chỉ định file rõ ràng)
+docker compose -f compose.yml -f compose.prod.yml up -d
+```
+
+---
+
+### 3.3 Docker Swarm
+
+**Docker Swarm** là công cụ container orchestration tích hợp sẵn trong Docker Engine, cho phép quản lý một **cluster** (cụm) nhiều máy chủ Docker như một đơn vị duy nhất. Swarm cung cấp tính năng: scheduling (lên lịch container), load balancing, service discovery, rolling update và self-healing.
+
+#### Kiến trúc Swarm
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Docker Swarm Cluster                       │
+│                                                                    │
+│  ┌──────────────────────┐    ┌─────────────┐  ┌─────────────┐   │
+│  │     Manager Node      │    │ Worker Node │  │ Worker Node │   │
+│  │                       │    │             │  │             │   │
+│  │  ┌─────────────────┐  │    │  container  │  │  container  │   │
+│  │  │  Raft Consensus  │  │    │  container  │  │  container  │   │
+│  │  │  (quorum vote)   │  │    └─────────────┘  └─────────────┘  │
+│  │  └─────────────────┘  │                                        │
+│  │  Scheduler / Dispatcher│◄──── docker service create           │
+│  └──────────────────────┘                                        │
+│                                                                    │
+│  Overlay Network (tự động mã hóa giữa các node)                 │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Manager Node:** chứa trạng thái cluster (Raft log), lên lịch task cho worker, xử lý API. Nên có số lẻ manager (1, 3, 5) để đảm bảo quorum.
+
+**Worker Node:** chạy container theo lệnh từ manager. Không tham gia quyết định cluster.
+
+**Quorum:** với N manager, cluster cần ít nhất `⌊N/2⌋ + 1` manager online để hoạt động.
+
+| Số Manager | Quorum tối thiểu | Chịu mất tối đa |
+|---|---|---|
+| 1 | 1 | 0 (không HA) |
+| 3 | 2 | 1 |
+| 5 | 3 | 2 |
+| 7 | 4 | 3 |
+
+#### Khởi tạo Swarm Cluster
+
+```bash
+# ── Trên máy Manager (IP: 192.168.1.10) ──────────────────────
+
+# Khởi tạo Swarm, chỉ định IP advertise ra các node khác
+docker swarm init --advertise-addr 192.168.1.10
+
+# Output:
+# Swarm initialized: current node (xxx) is now a manager.
+# To add a worker to this swarm, run the following command:
+#   docker swarm join --token SWMTKN-1-xxx... 192.168.1.10:2377
+
+# Lấy token để add thêm worker
+docker swarm join-token worker
+
+# Lấy token để add thêm manager (cho HA setup)
+docker swarm join-token manager
+
+# ── Trên máy Worker (IP: 192.168.1.11, 192.168.1.12) ─────────
+
+docker swarm join \
+  --token SWMTKN-1-xxx... \
+  192.168.1.10:2377
+
+# ── Kiểm tra cluster ──────────────────────────────────────────
+
+# Xem danh sách node (chỉ chạy trên manager)
+docker node ls
+# ID          HOSTNAME    STATUS  AVAILABILITY  MANAGER STATUS
+# abc123 *    manager-1   Ready   Active        Leader
+# def456      worker-1    Ready   Active
+# ghi789      worker-2    Ready   Active
+
+# Xem thông tin node cụ thể
+docker node inspect manager-1 --pretty
+
+# Promote worker lên manager
+docker node promote worker-1
+
+# Demote manager xuống worker
+docker node demote worker-2
+
+# Drain node (đưa container sang node khác, chuẩn bị bảo trì)
+docker node update --availability drain worker-1
+
+# Xóa node khỏi cluster (node phải leave trước)
+# -- Trên node cần xóa:
+docker swarm leave
+# -- Trên manager:
+docker node rm worker-1
+```
+
+#### Docker Service – đơn vị triển khai trong Swarm
+
+**Service** là cách khai báo "tôi muốn chạy X replica của image Y với cấu hình Z". Swarm tự động đảm bảo số lượng replica luôn đúng (self-healing).
+
+```bash
+# Tạo service nginx với 3 replica
+docker service create \
+  --name web \
+  --replicas 3 \
+  --publish published=80,target=80 \
+  nginx:alpine
+
+# Xem danh sách service
+docker service ls
+
+# Xem các task (container) của service và node chúng đang chạy
+docker service ps web
+
+# Xem log của service
+docker service logs -f web
+
+# Scale service
+docker service scale web=5
+
+# Update image (rolling update)
+docker service update \
+  --image nginx:1.25-alpine \
+  --update-parallelism 1 \    # cập nhật 1 replica mỗi lần
+  --update-delay 10s \        # chờ 10s giữa các bước
+  web
+
+# Rollback về version trước
+docker service rollback web
+
+# Xóa service
+docker service rm web
+```
+
+#### Overlay Network trong Swarm
+
+```bash
+# Tạo overlay network (span qua nhiều host)
+docker network create \
+  --driver overlay \
+  --attachable \              # cho phép container standalone join
+  --subnet 10.10.0.0/16 \
+  my_overlay
+
+# Service dùng overlay network
+docker service create \
+  --name api \
+  --network my_overlay \
+  --replicas 2 \
+  my-api:latest
+
+# Service tự động discover nhau qua tên service
+# Container "web" có thể ping "api" qua overlay DNS
+```
+
+#### Swarm Routing Mesh
+
+Docker Swarm có cơ chế **Routing Mesh** tích hợp: khi publish port của service, mọi node trong cluster đều lắng nghe port đó, và tự động forward request đến node đang chạy replica.
+
+```
+Client → port 80 của BẤT KỲ node nào trong cluster
+           ↓
+       Routing Mesh (IPVS / iptables)
+           ↓
+  Replica đang chạy trên node bất kỳ
+```
+
+```bash
+# Service với routing mesh: port 80 trên tất cả node đều hoạt động
+docker service create \
+  --name web \
+  --publish 80:80 \
+  --replicas 3 \
+  nginx:alpine
+
+# Kiểm tra: curl bất kỳ node nào cũng được
+curl http://192.168.1.10   # manager
+curl http://192.168.1.11   # worker-1
+curl http://192.168.1.12   # worker-2
+# Tất cả đều trả về response từ một trong 3 replica
+```
+
+#### Secrets và Configs trong Swarm
+
+```bash
+# Tạo secret từ stdin
+echo "super_secret_password" | docker secret create db_password -
+
+# Tạo secret từ file
+docker secret create ssl_cert ./certs/server.crt
+
+# Liệt kê secret
+docker secret ls
+
+# Service dùng secret (mount tại /run/secrets/<name>)
+docker service create \
+  --name api \
+  --secret db_password \
+  --secret ssl_cert \
+  my-api:latest
+
+# Trong container, đọc secret:
+# cat /run/secrets/db_password
+
+# Tạo config (cho file cấu hình không nhạy cảm)
+docker config create nginx_conf ./nginx/nginx.conf
+
+# Service dùng config
+docker service create \
+  --name web \
+  --config source=nginx_conf,target=/etc/nginx/nginx.conf \
+  nginx:alpine
+
+# Xóa secret / config (phải remove khỏi service trước)
+docker secret rm db_password
+docker config rm nginx_conf
+```
+
+---
+
+### 3.4 Docker Stack
+
+**Docker Stack** là cách triển khai multi-service application lên Docker Swarm bằng file `docker-compose.yml` (với section `deploy` mở rộng). Stack = Docker Compose dành cho môi trường production cluster.
+
+```
+Docker Compose  ──→  1 host, development, docker compose up
+Docker Stack    ──→  Swarm cluster, production, docker stack deploy
+```
+
+#### Cấu trúc file Stack (Compose với deploy)
+
+```yaml
+# stack.yml
+services:
+
+  # ── Database ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: appdb
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    secrets:
+      - db_password
+    deploy:
+      replicas: 1                       # DB thường chỉ 1 replica
+      placement:
+        constraints:
+          - node.role == worker
+          - node.labels.db == "true"    # chỉ chạy trên node có label này
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # ── Redis ─────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    networks:
+      - backend
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+
+  # ── API Backend ───────────────────────────────────────────
+  api:
+    image: registry.example.com/team/api:${API_VERSION:-latest}
+    networks:
+      - backend
+      - frontend
+    secrets:
+      - db_password
+    environment:
+      DATABASE_URL: postgresql://appuser@postgres:5432/appdb
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1                  # update từng replica một
+        delay: 15s                      # chờ 15s sau mỗi bước
+        failure_action: rollback        # tự rollback nếu update fail
+        monitor: 30s                    # monitor 30s sau khi update
+        order: start-first              # start mới trước, stop cũ sau
+      rollback_config:
+        parallelism: 2
+        delay: 5s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # ── Frontend (Nginx) ──────────────────────────────────────
+  web:
+    image: registry.example.com/team/web:${WEB_VERSION:-latest}
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - frontend
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/nginx.conf
+    deploy:
+      replicas: 2
+      placement:
+        constraints:
+          - node.role == worker
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.web.rule=Host(`example.com`)"
+
+networks:
+  backend:
+    driver: overlay
+    internal: true
+  frontend:
+    driver: overlay
+
+volumes:
+  pg_data:
+    driver: local
+
+secrets:
+  db_password:
+    external: true              # đã tạo trước bằng docker secret create
+
+configs:
+  nginx_conf:
+    external: true              # đã tạo trước bằng docker config create
+```
+
+#### Triển khai Docker Stack
+
+```bash
+# ─── Chuẩn bị ────────────────────────────────────────────────
+
+# Bước 1: Đảm bảo đang trên manager node
+docker node ls
+
+# Bước 2: Tạo secret trước khi deploy
+echo "my_db_password" | docker secret create db_password -
+
+# Bước 3: Tạo config
+docker config create nginx_conf ./nginx/nginx.conf
+
+# Bước 4: Thêm label cho node DB (nếu dùng placement constraint)
+docker node update --label-add db=true worker-1
+
+# ─── Deploy ──────────────────────────────────────────────────
+
+# Deploy stack lần đầu (hoặc update)
+docker stack deploy \
+  -c stack.yml \
+  --with-registry-auth \        # gửi registry credentials đến worker
+  myapp
+
+# ─── Theo dõi ─────────────────────────────────────────────────
+
+# Xem tất cả stack đang chạy
+docker stack ls
+
+# Xem các service trong stack
+docker stack services myapp
+
+# Xem tasks (container) của stack
+docker stack ps myapp
+
+# Xem tasks đang running (bỏ qua shutdown)
+docker stack ps myapp --filter "desired-state=running"
+
+# Xem log của service trong stack
+docker service logs -f myapp_api
+
+# ─── Update ──────────────────────────────────────────────────
+
+# Update image (sửa API_VERSION trong .env rồi deploy lại)
+export API_VERSION=v2.1.0
+docker stack deploy -c stack.yml --with-registry-auth myapp
+# Swarm tự thực hiện rolling update theo update_config
+
+# Rollback service về version trước
+docker service rollback myapp_api
+
+# Scale service thủ công
+docker service scale myapp_api=5
+
+# ─── Cleanup ─────────────────────────────────────────────────
+
+# Xóa toàn bộ stack (giữ volume và secret)
+docker stack rm myapp
+
+# Xóa secret và config sau khi stack đã down
+docker secret rm db_password
+docker config rm nginx_conf
+```
+
+#### Visualizer – theo dõi Swarm cluster
+
+```bash
+# Chạy Swarm Visualizer (công cụ debug trực quan)
+docker service create \
+  --name visualizer \
+  --publish 8080:8080 \
+  --constraint node.role==manager \
+  --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+  dockersamples/visualizer:stable
+
+# Mở browser: http://<manager-ip>:8080
+# Hiển thị map các container đang chạy trên từng node
+```
+
+#### Ví dụ thực tế: Migrate từ Compose lên Stack
+
+```bash
+# Bước 1: Bắt đầu với compose.yml (môi trường dev đã có)
+# Bước 2: Init Swarm
+docker swarm init --advertise-addr $(hostname -I | awk '{print $1}')
+
+# Bước 3: Thêm section "deploy" vào từng service trong compose.yml
+# (giữ nguyên phần còn lại, Compose bỏ qua "deploy" khi dùng compose up)
+
+# Bước 4: Deploy lên Swarm
+docker stack deploy -c compose.yml myapp
+
+# Kết quả: cùng 1 file, dùng được cho cả dev (compose up) và prod (stack deploy)
+```
+
+---
+
+### 3.5 So sánh các phương thức triển khai
+
+| Tiêu chí | `docker run` | `docker compose` | `docker stack` (Swarm) |
+|---|---|---|---|
+| **Phạm vi** | 1 container | Multi-container, 1 host | Multi-container, multi-host |
+| **File config** | CLI flags | `compose.yml` | `compose.yml` + `deploy` section |
+| **Scaling** | Thủ công (nhiều lệnh) | `--scale` (cùng host) | Tự động, across nodes |
+| **Rolling update** | Không hỗ trợ | Không hỗ trợ | Có (update_config) |
+| **Self-healing** | Chỉ restart policy | Chỉ restart policy | Có (reschedule container trên node khác) |
+| **Load balancing** | Không | Không | Có (Routing Mesh + VIP) |
+| **Secret management** | `-e` env var | `.env` file | `docker secret` (mã hóa Raft) |
+| **Service discovery** | Thủ công | DNS trong network | DNS overlay tự động |
+| **Use case** | Test, debug | Dev, CI/CD, nhỏ | Production, HA |
+| **Độ phức tạp** | Thấp | Trung bình | Cao |
+
+#### Khi nào dùng gì
+
+```
+Môi trường dev / local testing
+        → docker compose up
+
+CI/CD pipeline (build, test, integration)
+        → docker compose (ephemeral, dễ cleanup)
+
+Production – 1 server, ứng dụng nhỏ
+        → docker compose up -d (với restart policy)
+
+Production – nhiều server, cần HA / scaling
+        → Docker Stack trên Swarm
+
+Production – lớn, phức tạp, cần nhiều tính năng
+        → Kubernetes (bước tiếp theo sau Swarm)
 ```
 
 ---
