@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>SRE Intern – Fullstack Lab</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+        .box { border: 1px solid #ddd; padding: 20px; display: inline-block; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .visits { color: #e74c3c; font-size: 24px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Kiểm tra hệ thống Fullstack bằng Docker</h1>
+        <p id="message">Đang chờ Backend...</p>
+        <p>Số lượt truy cập hệ thống: <span id="visits" class="visits">0</span></p>
+    </div>
+
+    <script>
+        fetch('/api/visits')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('message').innerText = data.message;
+                document.getElementById('visits').innerText = data.visits;
+            })
+            .catch(error => {
+                document.getElementById('message').innerText = "Lỗi kết nối Backend!";
+                console.error(error);
+            });
+    </script>
+</body>
+</html>
