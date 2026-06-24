@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  # === NGINX BACKENDS ===
+  nginx-1:
+    image: nginx:alpine
+    volumes:
+      - ./html/web1:/usr/share/nginx/html
+    networks:
+      - ha-network
+
+  nginx-2:
+    image: nginx:alpine
+    volumes:
+      - ./html/web2:/usr/share/nginx/html
+    networks:
+      - ha-network
+
+  # === HAPROXY COMPONENT ===
+  haproxy-master:
+    image: haproxy:alpine
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      ha-network:
+        ipv4_address: 172.20.0.21
+
+  haproxy-backup:
+    image: haproxy:alpine
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      ha-network:
+        ipv4_address: 172.20.0.22
+
+  # === KEEPALIVED COMPONENT ===
+  keepalived-master:
+    image: osixia/keepalived:latest
+    network_mode: "service:haproxy-master" # Gắn mạng chung với HAProxy Master
+    cap_add:
+      - NET_ADMIN
+      - NET_BROADCAST
+    volumes:
+      - ./keepalived/keepalived-master.conf:/usr/local/etc/keepalived/keepalived.conf:ro
+    command: ["--copy-default", "--log-detail"]
+
+  keepalived-backup:
+    image: osixia/keepalived:latest
+    network_mode: "service:haproxy-backup" # Gắn mạng chung với HAProxy Backup
+    cap_add:
+      - NET_ADMIN
+      - NET_BROADCAST
+    volumes:
+      - ./keepalived/keepalived-backup.conf:/usr/local/etc/keepalived/keepalived.conf:ro
+    command: ["--copy-default", "--log-detail"]
+
+# === MẠNG NỘI BỘ VỚI SUBNET CỤ THỂ ===
+networks:
+  ha-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
