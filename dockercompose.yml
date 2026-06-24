@@ -1,0 +1,48 @@
+# Khởi động toàn bộ stack (foreground)
+docker compose up
+
+# Khởi động ở background (detached)
+docker compose up -d
+
+# Build lại image trước khi up
+docker compose up --build
+
+# Xem log realtime của tất cả service
+docker compose logs -f
+
+# Xem log của 1 service
+docker compose logs -f api
+
+# Liệt kê container đang chạy trong project
+docker compose ps
+
+# Dừng (giữ container, không xóa)
+docker compose stop
+
+# Dừng & xóa container, network (giữ volume)
+docker compose down
+
+# Dừng & xóa luôn volume (MẤT DATA)
+docker compose down -v
+
+# Dừng & xóa luôn image đã build
+docker compose down --rmi local
+
+# Vào shell trong 1 container đang chạy
+docker compose exec api sh
+
+# Chạy lệnh 1 lần (tạo container mới, không liên quan container đang chạy)
+docker compose run --rm api npm test
+
+# Restart 1 service
+docker compose restart api
+
+# Xem cấu hình đã merge/resolve
+docker compose config
+
+# Pull image mới nhất cho các service dùng image:
+docker compose pull
+
+# Kiểm tra resource usage
+docker compose top
+docker stats

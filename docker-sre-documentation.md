@@ -673,14 +673,14 @@ docker inspect --format='{{.State.Health.Status}}' my-nginx
           │   Virtual IP (VIP)             │
           │   192.168.1.100 (Keepalived)   │
           └────────────┬───────────────────┘
-                       │ VRRP
+                       │  
           ┌────────────┴────────────┐
           │                         │
           ▼                         ▼
   ┌───────────────┐         ┌───────────────┐
   │  HAProxy      │ MASTER  │  HAProxy      │ BACKUP
-  │  Master       │◄──────►│  Backup       │
-  │  192.168.1.10 │  VRRP   │  192.168.1.11 │
+  │  Master       │◄──────► │  Backup       │
+  │  192.168.1.10 │         │  192.168.1.11 │
   └───────┬───────┘         └───────────────┘
           │ Load Balance (Round Robin)
           │
@@ -688,7 +688,7 @@ docker inspect --format='{{.State.Health.Status}}' my-nginx
     ▼     ▼     ▼
 ┌───────┐┌───────┐┌───────┐
 │Nginx-1││Nginx-2││Nginx-3│
-│:8081  ││:8082  ││:8083  │
+│web1   ││web2   ││web3   │
 └───────┘└───────┘└───────┘
 ```
 
