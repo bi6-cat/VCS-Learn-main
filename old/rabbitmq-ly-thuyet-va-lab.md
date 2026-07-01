@@ -44,7 +44,7 @@ RabbitMQ là một **message broker** (phần mềm trung gian truyền message)
 | Service B sập → Service A cũng lỗi theo (tight coupling) | A chỉ cần gửi message vào queue, B đọc khi sẵn sàng (decoupling) |
 | A phải chờ B xử lý xong mới tiếp tục (blocking) | A gửi xong là xong ngay (asynchronous, fire-and-forget) |
 | B bị quá tải khi traffic tăng đột biến | Queue đóng vai trò buffer, B xử lý theo tốc độ riêng (load leveling) |
-| Khó nhân bản nhiều consumer xử lý song song | Nhiều consumer cùng đọc 1 queue → tự động load balance |
+| Khó nhân bản nhiều consumer xử lý song song | Nhiều consumer  cùng đọc 1 queue → tự động load balance |
 | Khó phát 1 sự kiện cho nhiều bên quan tâm | Pub/Sub qua exchange — 1 message tới N consumer |
 
 ### 1.3. RabbitMQ vs Kafka — khi nào dùng cái nào?
