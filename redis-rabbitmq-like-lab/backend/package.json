@@ -1,0 +1,13 @@
+{
+  "name": "like-lab-backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "express": "^4.18.3",
+    "redis": "^4.6.13"
+  }
+}

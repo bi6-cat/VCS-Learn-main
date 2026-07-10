@@ -1,0 +1,160 @@
+services:
+  redis-node-1:
+    image: redis:7-alpine
+    container_name: like_lab_redis_node_1
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --protected-mode no
+    ports:
+      - "7001:6379"
+    volumes:
+      - redis_node_1_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-node-2:
+    image: redis:7-alpine
+    container_name: like_lab_redis_node_2
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --protected-mode no
+    ports:
+      - "7002:6379"
+    volumes:
+      - redis_node_2_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-node-3:
+    image: redis:7-alpine
+    container_name: like_lab_redis_node_3
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --protected-mode no
+    ports:
+      - "7003:6379"
+    volumes:
+      - redis_node_3_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-node-4:
+    image: redis:7-alpine
+    container_name: like_lab_redis_node_4
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --protected-mode no
+    ports:
+      - "7004:6379"
+    volumes:
+      - redis_node_4_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-node-5:
+    image: redis:7-alpine
+    container_name: like_lab_redis_node_5
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --protected-mode no
+    ports:
+      - "7005:6379"
+    volumes:
+      - redis_node_5_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-node-6:
+    image: redis:7-alpine
+    container_name: like_lab_redis_node_6
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --protected-mode no
+    ports:
+      - "7006:6379"
+    volumes:
+      - redis_node_6_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: like_lab_redis_cluster_init
+    command: >
+      sh -c "if redis-cli -h redis-node-1 cluster info | grep -q 'cluster_state:ok';
+      then echo 'Redis Cluster already exists';
+      else redis-cli --cluster create
+      redis-node-1:6379 redis-node-2:6379 redis-node-3:6379
+      redis-node-4:6379 redis-node-5:6379 redis-node-6:6379
+      --cluster-replicas 1 --cluster-yes;
+      fi"
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+      redis-node-4:
+        condition: service_healthy
+      redis-node-5:
+        condition: service_healthy
+      redis-node-6:
+        condition: service_healthy
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: like_lab_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+    container_name: like_lab_backend
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      REDIS_CLUSTER_NODES: redis://redis-node-1:6379,redis://redis-node-2:6379,redis://redis-node-3:6379,redis://redis-node-4:6379,redis://redis-node-5:6379,redis://redis-node-6:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      QUEUE_NAME: like_notifications
+    depends_on:
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./worker
+    container_name: like_lab_worker
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      QUEUE_NAME: like_notifications
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  redis_node_1_data:
+  redis_node_2_data:
+  redis_node_3_data:
+  redis_node_4_data:
+  redis_node_5_data:
+  redis_node_6_data:
+  rabbitmq_data:
