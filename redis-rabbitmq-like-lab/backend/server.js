@@ -77,6 +77,46 @@ app.post('/like', async (req, res) => {
   });
 });
 
+app.post('/like/bulk', async (req, res) => {
+  const count = Math.min(Number(req.body.count) || 10, 100);
+  const jobs = [];
+  let latestLikes = 0;
+
+  for (let index = 0; index < count; index += 1) {
+    latestLikes = await redisClient.incr(likesKey);
+
+    const message = {
+      postId: 1,
+      event: 'liked',
+      likes: latestLikes,
+      createdAt: new Date().toISOString()
+    };
+
+    rabbitChannel.sendToQueue(queueName, Buffer.from(JSON.stringify(message)), {
+      persistent: true,
+      contentType: 'application/json'
+    });
+
+    jobs.push(message);
+  }
+
+  res.status(201).json({
+    message: `${count} likes saved in Redis and ${count} jobs sent to RabbitMQ`,
+    postId: 1,
+    likes: latestLikes,
+    jobsSent: jobs.length
+  });
+});
+
+app.get('/queue', async (req, res) => {
+  const queue = await rabbitChannel.checkQueue(queueName);
+  res.json({
+    queue: queue.queue,
+    messagesReady: queue.messageCount,
+    consumers: queue.consumerCount
+  });
+});
+
 app.delete('/likes', async (req, res) => {
   await redisClient.del(likesKey);
   res.json({ message: 'Likes reset', postId: 1, likes: 0 });
