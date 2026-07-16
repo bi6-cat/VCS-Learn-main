@@ -1,0 +1,1 @@
+File mẫu dùng để kiểm tra alias và autoindex của Nginx.

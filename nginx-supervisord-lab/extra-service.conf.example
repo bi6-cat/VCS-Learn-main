@@ -1,0 +1,5 @@
+[program:clock]
+command=/bin/sh -c "while true; do date; sleep 5; done"
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/clock.log
