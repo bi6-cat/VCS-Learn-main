@@ -1,6 +1,6 @@
 # Lab demo Nginx + Supervisord
 
-Lab chạy local bằng Docker, không dùng Docker Compose, không cần domain hay Let’s Encrypt. Dockerfile tự tạo certificate self-signed cho `localhost` để demo HTTPS.
+Lab chạy local bằng Docker, không dùng Docker Compose, không cần domain hay Let’s Encrypt. Image dùng `debian:bookworm-slim`; Dockerfile tự tạo certificate self-signed cho `localhost` để demo HTTPS.
 
 ```text
 nginx-supervisord-lab/
