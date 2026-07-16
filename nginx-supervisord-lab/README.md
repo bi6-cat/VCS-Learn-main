@@ -8,8 +8,9 @@ nginx-supervisord-lab/
 ├── nginx.conf
 ├── supervisord.conf
 ├── app.py
+├── extra_app.py
 ├── index.html
-├── extra-service.conf.example
+├── extra-app.conf.example
 ├── downloads/
 ├── logs/
 └── report-images/
@@ -101,23 +102,37 @@ curl -sk https://localhost:8443/api/
 docker exec nginx-supervisor-lab tail -n 5 /var/log/supervisor/app_00_stdout.log
 ```
 
-### Add/remove service
+### Add/remove extra app
+
+Trước khi add, extra app chưa chạy nên route này trả 502:
 
 ```bash
-docker cp extra-service.conf.example nginx-supervisor-lab:/etc/supervisor/conf.d/clock.conf
+curl -sk -o /dev/null -w '%{http_code}\n' https://localhost:8443/extra/
+```
+
+Thêm service:
+
+```bash
+docker cp extra-app.conf.example nginx-supervisor-lab:/etc/supervisor/conf.d/extra_app.conf
 docker exec nginx-supervisor-lab supervisorctl reread
 docker exec nginx-supervisor-lab supervisorctl update
 docker exec nginx-supervisor-lab supervisorctl status
+curl -sk https://localhost:8443/extra/
 ```
 
-Xóa service:
+Sau `update`, `extra_app` phải là `RUNNING` và `/extra/` trả JSON có port 9100.
+
+Xóa extra app:
 
 ```bash
-docker exec nginx-supervisor-lab supervisorctl stop clock
-docker exec nginx-supervisor-lab rm /etc/supervisor/conf.d/clock.conf
+docker exec nginx-supervisor-lab supervisorctl stop extra_app
+docker exec nginx-supervisor-lab rm /etc/supervisor/conf.d/extra_app.conf
 docker exec nginx-supervisor-lab supervisorctl reread
 docker exec nginx-supervisor-lab supervisorctl update
+curl -sk -o /dev/null -w '%{http_code}\n' https://localhost:8443/extra/
 ```
+
+Sau khi xóa, `/extra/` trở lại 502; hai worker chính và Nginx vẫn chạy.
 
 ## 4. Reload Nginx
 

@@ -1,0 +1,7 @@
+[program:extra_app]
+command=/usr/bin/python3 /opt/lab/extra_app.py
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/extra_app_stdout.log
+stderr_logfile=/var/log/supervisor/extra_app_stderr.log
+environment=PYTHONUNBUFFERED="1"

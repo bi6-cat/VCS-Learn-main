@@ -10,6 +10,7 @@ RUN apt-get update \
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY app.py /opt/lab/app.py
+COPY extra_app.py /opt/lab/extra_app.py
 COPY index.html /var/www/lab/index.html
 COPY downloads/ /var/www/lab/downloads/
 
