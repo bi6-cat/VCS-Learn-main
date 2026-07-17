@@ -1,0 +1,189 @@
+user www-data;
+worker_processes auto;
+worker_shutdown_timeout 10s;
+
+events {
+    worker_connections 4096;
+    multi_accept on;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    server_tokens off;
+
+    map $http_x_request_id $trace_id {
+        default $http_x_request_id;
+        ""      $request_id;
+    }
+
+    log_format lab_json escape=json
+        '{"time":"$time_iso8601",'
+        '"request_id":"$trace_id",'
+        '"remote_addr":"$remote_addr",'
+        '"method":"$request_method",'
+        '"uri":"$request_uri",'
+        '"status":$status,'
+        '"request_time":$request_time,'
+        '"upstream_addr":"$upstream_addr",'
+        '"upstream_status":"$upstream_status",'
+        '"upstream_connect_time":"$upstream_connect_time",'
+        '"upstream_response_time":"$upstream_response_time",'
+        '"bytes_sent":$bytes_sent}';
+
+    limit_req_zone $binary_remote_addr zone=api_rate:10m rate=5r/s;
+    limit_conn_zone $binary_remote_addr zone=per_ip_conn:10m;
+
+    proxy_cache_path /var/cache/nginx/lab_cache
+        levels=1:2
+        keys_zone=lab_cache:10m
+        max_size=100m
+        inactive=1m
+        use_temp_path=off;
+
+    upstream backend {
+        least_conn;
+        server 127.0.0.1:9000 max_fails=1 fail_timeout=10s;
+        server 127.0.0.1:9001 max_fails=1 fail_timeout=10s;
+        keepalive 16;
+    }
+
+    gzip on;
+    gzip_min_length 256;
+    gzip_types application/json text/plain text/css application/javascript;
+
+    server {
+        listen 80;
+        server_name localhost;
+        return 301 https://$host:8443$request_uri;
+    }
+
+    server {
+        listen 443 ssl;
+        server_name localhost;
+
+        ssl_certificate /etc/nginx/ssl/lab.crt;
+        ssl_certificate_key /etc/nginx/ssl/lab.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 10m;
+
+        root /var/www/lab;
+        index index.html;
+        client_max_body_size 1m;
+
+        access_log /var/log/nginx/lab_access_json.log lab_json;
+        error_log /var/log/nginx/lab_error.log warn;
+
+        add_header X-Lab-Server "nginx-advanced-lab" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+        location = /healthz {
+            default_type text/plain;
+            return 200 "nginx is healthy\n";
+        }
+
+        location /api/ {
+            if ($request_method !~ ^(GET|POST|HEAD)$) {
+                return 405;
+            }
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $trace_id;
+
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 5s;
+            proxy_read_timeout 2s;
+            proxy_next_upstream error timeout http_502 http_503 http_504;
+            proxy_next_upstream_tries 2;
+
+            proxy_pass http://backend/;
+        }
+
+        location /limited-api/ {
+            limit_req zone=api_rate burst=2 nodelay;
+            limit_req_status 429;
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header X-Request-ID $trace_id;
+            proxy_pass http://backend/;
+        }
+
+        location /conn-api/ {
+            limit_conn per_ip_conn 1;
+            limit_conn_status 429;
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_pass http://backend/;
+        }
+
+        location /cached-api/ {
+            proxy_cache lab_cache;
+            proxy_cache_key "$scheme$request_method$host$uri$is_args$args";
+            proxy_cache_methods GET HEAD;
+            proxy_cache_valid 200 10s;
+            proxy_cache_lock on;
+            proxy_cache_bypass $http_x_bypass_cache;
+            proxy_no_cache $http_x_bypass_cache;
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header X-Request-ID $trace_id;
+            proxy_pass http://backend/;
+
+            # Một add_header ở location làm mất kế thừa add_header từ server,
+            # vì vậy các security header được khai báo lại có chủ đích.
+            add_header X-Cache-Status $upstream_cache_status always;
+            add_header X-Lab-Server "nginx-advanced-lab" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        }
+
+        # Các location sau dành riêng để quan sát thuật toán chọn location.
+        location = /match {
+            default_type text/plain;
+            return 200 "exact match\n";
+        }
+
+        location ^~ /match/static/ {
+            default_type text/plain;
+            return 200 "prefix ^~ /match/static/\n";
+        }
+
+        location ~* \.(txt|jpg)$ {
+            default_type text/plain;
+            return 200 "regex extension\n";
+        }
+
+        location /match/ {
+            default_type text/plain;
+            return 200 "normal prefix /match/\n";
+        }
+
+        location ~ /\. {
+            deny all;
+        }
+
+        location /downloads/ {
+            alias /var/www/lab/downloads/;
+            autoindex on;
+            limit_except GET {
+                deny all;
+            }
+        }
+
+        location / {
+            try_files $uri $uri/ =404;
+        }
+    }
+}
