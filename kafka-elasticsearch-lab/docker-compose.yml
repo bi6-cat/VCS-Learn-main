@@ -1,0 +1,138 @@
+name: kafka-elasticsearch-lab
+
+services:
+  kafka:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    hostname: kafka
+    container_name: lab-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    container_name: lab-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 \
+          --create --if-not-exists --topic customer-events \
+          --partitions 3 --replication-factor 1 \
+          --config retention.ms=604800000 &&
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 \
+          --create --if-not-exists --topic customer-events-dlq \
+          --partitions 1 --replication-factor 1 \
+          --config retention.ms=1209600000 &&
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
+    hostname: elasticsearch
+    container_name: lab-elasticsearch
+    ports:
+      - "${ES_PORT:-9200}:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.enrollment.enabled: "false"
+      ES_JAVA_OPTS: -Xms768m -Xmx768m
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./service
+    container_name: lab-api
+    command: ["node", "src/api.js"]
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_TOPIC: customer-events
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_INDEX: customer-events-v1
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  indexer:
+    build:
+      context: ./service
+    command: ["node", "src/indexer.js"]
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_TOPIC: customer-events
+      KAFKA_DLQ_TOPIC: customer-events-dlq
+      KAFKA_GROUP_ID: elasticsearch-indexers
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_INDEX: customer-events-v1
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    image: nginx:1.29-alpine
+    container_name: lab-web
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  kafka_data:
+  elasticsearch_data:

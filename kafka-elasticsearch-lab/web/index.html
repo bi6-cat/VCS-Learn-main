@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Customer Event Search Lab</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">KAFKA × ELASTICSEARCH</p>
+      <h1>Customer Event Search</h1>
+      <p class="subtitle">Phát sự kiện, quan sát pipeline và tìm kiếm dữ liệu gần thời gian thực.</p>
+    </div>
+    <div id="health" class="health"><span></span> Đang kiểm tra dịch vụ…</div>
+  </header>
+
+  <main>
+    <section class="panel composer">
+      <div class="section-heading">
+        <div><span>01</span><h2>Phát event vào Kafka</h2></div>
+        <button id="sampleButton" class="ghost" type="button">Điền dữ liệu mẫu</button>
+      </div>
+      <form id="eventForm">
+        <label>User ID<input name="userId" value="user-001" required></label>
+        <label>Loại event
+          <select name="eventType">
+            <option value="view">view</option>
+            <option value="search">search</option>
+            <option value="add_to_cart">add_to_cart</option>
+            <option value="purchase">purchase</option>
+            <option value="review">review</option>
+          </select>
+        </label>
+        <label>Danh mục<input name="category" value="electronics" required></label>
+        <label>Số tiền<input name="amount" type="number" min="0" step="0.01" value="0"></label>
+        <label class="wide">Tiêu đề<input name="title" value="Tai nghe chống ồn cao cấp" required></label>
+        <label class="wide">Mô tả<textarea name="description" rows="3">Khách hàng xem sản phẩm tai nghe bluetooth chống ồn.</textarea></label>
+        <div class="wide action-row">
+          <button type="submit">Gửi event</button>
+          <output id="publishResult">Chưa có event nào được gửi.</output>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel search-panel">
+      <div class="section-heading"><div><span>02</span><h2>Tìm kiếm trong Elasticsearch</h2></div></div>
+      <form id="searchForm" class="filters">
+        <label class="query">Từ khóa<input name="q" placeholder="Ví dụ: tai nghe chống ồn"></label>
+        <label>Event type<select name="eventType"><option value="">Tất cả</option><option>view</option><option>search</option><option>add_to_cart</option><option>purchase</option><option>review</option></select></label>
+        <label>Category<input name="category" placeholder="electronics"></label>
+        <label>User ID<input name="userId" placeholder="user-001"></label>
+        <button type="submit">Tìm kiếm</button>
+      </form>
+
+      <div id="metrics" class="metrics">
+        <article><small>Kết quả</small><strong id="total">0</strong></article>
+        <article><small>Query time</small><strong id="took">0 ms</strong></article>
+        <article><small>Tổng amount</small><strong id="amount">0 ₫</strong></article>
+      </div>
+
+      <div class="results-layout">
+        <aside>
+          <h3>Aggregation</h3>
+          <div id="aggregations" class="aggregation-list">Chưa có dữ liệu.</div>
+        </aside>
+        <div id="results" class="result-list"><p class="empty">Hãy gửi event hoặc chạy dữ liệu mẫu.</p></div>
+      </div>
+    </section>
+  </main>
+
+  <template id="resultTemplate">
+    <article class="event-card">
+      <div class="event-top"><span class="event-type"></span><time></time></div>
+      <h3></h3><p></p>
+      <div class="tags"><span class="category"></span><span class="user"></span><span class="partition"></span><span class="score"></span></div>
+    </article>
+  </template>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
+
