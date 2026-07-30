@@ -14,7 +14,8 @@ COPY extra_app.py /opt/lab/extra_app.py
 COPY index.html /var/www/lab/index.html
 COPY downloads/ /var/www/lab/downloads/
 
-RUN mkdir -p /etc/nginx/ssl /etc/supervisor/conf.d /var/log/nginx /var/log/supervisor \
+RUN mkdir -p /etc/nginx/ssl /etc/supervisor/conf.d /var/log/nginx /var/log/supervisor /var/cache/nginx/lab_cache \
+    && chown -R www-data:www-data /var/cache/nginx/lab_cache \
     && openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
        -keyout /etc/nginx/ssl/lab.key \
        -out /etc/nginx/ssl/lab.crt \

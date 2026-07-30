@@ -2,6 +2,8 @@
 
 Lab chạy local bằng Docker, không dùng Docker Compose, không cần domain hay Let’s Encrypt. Image dùng `debian:bookworm-slim`; Dockerfile tự tạo certificate self-signed cho `localhost` để demo HTTPS.
 
+Phần thực hành Nginx chuyên sâu (location matching, proxy header/URI, load balancing, retry/timeout, rate limit, cache, TLS, structured log và graceful reload) nằm tại [`NGINX_ADVANCED_LAB.md`](NGINX_ADVANCED_LAB.md). Phần này dùng cấu hình riêng `nginx.advanced.conf.example`, không ghi đè cấu hình cơ bản.
+
 ```text
 nginx-supervisord-lab/
 ├── Dockerfile
