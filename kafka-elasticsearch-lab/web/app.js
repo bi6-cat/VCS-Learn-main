@@ -21,7 +21,7 @@ async function checkHealth() {
   try {
     const health = await fetchJson('/api/health');
     element.className = 'health healthy';
-    element.innerHTML = `<span></span> Kafka: ${health.kafka} · ES: ${health.elasticsearch}`;
+    element.innerHTML = `<span></span> Kafka: ${health.kafka.brokers} brokers / ${health.kafka.partitions} partitions · ES: ${health.elasticsearch.nodes} nodes / ${health.elasticsearch.status}`;
   } catch {
     element.className = 'health unhealthy';
     element.innerHTML = '<span></span> Pipeline chưa sẵn sàng';
@@ -113,4 +113,3 @@ function render(data) {
 checkHealth();
 runSearch();
 setInterval(checkHealth, 15000);
-

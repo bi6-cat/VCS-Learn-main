@@ -1,98 +1,200 @@
 name: kafka-elasticsearch-lab
 
+x-kafka-common: &kafka-common
+  image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+  restart: unless-stopped
+  environment: &kafka-environment
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:29093,2@kafka2:29093,3@kafka3:29093
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 2
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_NUM_PARTITIONS: 6
+    KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 10000
+    KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  healthcheck: &kafka-healthcheck
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
+    interval: 10s
+    timeout: 10s
+    retries: 18
+    start_period: 30s
+
+x-es-common: &es-common
+  image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
+  restart: unless-stopped
+  environment: &es-environment
+    cluster.name: customer-events-es
+    discovery.seed_hosts: es01,es02,es03
+    cluster.initial_master_nodes: es01,es02,es03
+    cluster.routing.allocation.awareness.attributes: zone
+    xpack.security.enabled: "false"
+    xpack.security.enrollment.enabled: "false"
+    bootstrap.memory_lock: "true"
+    path.repo: /snapshots
+    ES_JAVA_OPTS: -Xms768m -Xmx768m
+  ulimits:
+    memlock:
+      soft: -1
+      hard: -1
+  healthcheck: &es-healthcheck
+    test: ["CMD-SHELL", "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 50s
+
 services:
-  kafka:
-    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
-    hostname: kafka
-    container_name: lab-kafka
+  kafka1:
+    <<: *kafka-common
+    hostname: kafka1
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
+      <<: *kafka-environment
       KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
       KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://localhost:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-      KAFKA_NUM_PARTITIONS: 3
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:19092,HOST://localhost:9092
     volumes:
-      - kafka_data:/tmp/kraft-combined-logs
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 10s
-      retries: 12
-      start_period: 20s
-    restart: unless-stopped
+      - kafka1_data:/tmp/kraft-combined-logs
+
+  kafka2:
+    <<: *kafka-common
+    hostname: kafka2
+    ports:
+      - "127.0.0.1:9093:9092"
+    environment:
+      <<: *kafka-environment
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:19092,HOST://localhost:9093
+    volumes:
+      - kafka2_data:/tmp/kraft-combined-logs
+
+  kafka3:
+    <<: *kafka-common
+    hostname: kafka3
+    ports:
+      - "127.0.0.1:9094:9092"
+    environment:
+      <<: *kafka-environment
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:19092,HOST://localhost:9094
+    volumes:
+      - kafka3_data:/tmp/kraft-combined-logs
 
   kafka-init:
     image: apache/kafka:${KAFKA_VERSION:-4.3.1}
-    container_name: lab-kafka-init
     depends_on:
-      kafka:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 \
+        BROKERS="kafka1:19092,kafka2:19092,kafka3:19092"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$${BROKERS}" \
           --create --if-not-exists --topic customer-events \
-          --partitions 3 --replication-factor 1 \
+          --partitions 6 --replication-factor 3 \
+          --config min.insync.replicas=2 \
+          --config unclean.leader.election.enable=false \
           --config retention.ms=604800000 &&
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 \
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$${BROKERS}" \
           --create --if-not-exists --topic customer-events-dlq \
-          --partitions 1 --replication-factor 1 \
+          --partitions 3 --replication-factor 3 \
+          --config min.insync.replicas=2 \
+          --config unclean.leader.election.enable=false \
           --config retention.ms=1209600000 &&
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$${BROKERS}" --list
 
-  elasticsearch:
+  es-setup:
     image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
-    hostname: elasticsearch
-    container_name: lab-elasticsearch
-    ports:
-      - "${ES_PORT:-9200}:9200"
-    environment:
-      discovery.type: single-node
-      xpack.security.enabled: "false"
-      xpack.security.enrollment.enabled: "false"
-      ES_JAVA_OPTS: -Xms768m -Xmx768m
+    user: "0"
+    command: ["/bin/bash", "-c", "chown -R 1000:0 /snapshots && chmod 0770 /snapshots"]
     volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 40s
-    restart: unless-stopped
+      - es_snapshots:/snapshots
+
+  es01:
+    <<: *es-common
+    hostname: es01
+    ports:
+      - "127.0.0.1:${ES_PORT:-9200}:9200"
+    environment:
+      <<: *es-environment
+      node.name: es01
+      node.attr.zone: zone-a
+    volumes:
+      - es01_data:/usr/share/elasticsearch/data
+      - es_snapshots:/snapshots
+    depends_on:
+      es-setup:
+        condition: service_completed_successfully
+
+  es02:
+    <<: *es-common
+    hostname: es02
+    ports:
+      - "127.0.0.1:${ES_PORT_2:-9201}:9200"
+    environment:
+      <<: *es-environment
+      node.name: es02
+      node.attr.zone: zone-b
+    volumes:
+      - es02_data:/usr/share/elasticsearch/data
+      - es_snapshots:/snapshots
+    depends_on:
+      es-setup:
+        condition: service_completed_successfully
+
+  es03:
+    <<: *es-common
+    hostname: es03
+    ports:
+      - "127.0.0.1:${ES_PORT_3:-9202}:9200"
+    environment:
+      <<: *es-environment
+      node.name: es03
+      node.attr.zone: zone-c
+    volumes:
+      - es03_data:/usr/share/elasticsearch/data
+      - es_snapshots:/snapshots
+    depends_on:
+      es-setup:
+        condition: service_completed_successfully
 
   api:
     build:
       context: ./service
-    container_name: lab-api
     command: ["node", "src/api.js"]
     ports:
-      - "${APP_PORT:-3000}:3000"
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     environment:
       PORT: 3000
-      KAFKA_BROKERS: kafka:19092
+      KAFKA_BROKERS: kafka1:19092,kafka2:19092,kafka3:19092
       KAFKA_TOPIC: customer-events
-      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_URLS: http://es01:9200,http://es02:9200,http://es03:9200
       ELASTICSEARCH_INDEX: customer-events-v1
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      elasticsearch:
+      es01:
+        condition: service_healthy
+      es02:
+        condition: service_healthy
+      es03:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
@@ -106,25 +208,29 @@ services:
     build:
       context: ./service
     command: ["node", "src/indexer.js"]
+    scale: 3
     environment:
-      KAFKA_BROKERS: kafka:19092
+      KAFKA_BROKERS: kafka1:19092,kafka2:19092,kafka3:19092
       KAFKA_TOPIC: customer-events
       KAFKA_DLQ_TOPIC: customer-events-dlq
       KAFKA_GROUP_ID: elasticsearch-indexers
-      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_URLS: http://es01:9200,http://es02:9200,http://es03:9200
       ELASTICSEARCH_INDEX: customer-events-v1
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      elasticsearch:
+      es01:
+        condition: service_healthy
+      es02:
+        condition: service_healthy
+      es03:
         condition: service_healthy
     restart: unless-stopped
 
   web:
     image: nginx:1.29-alpine
-    container_name: lab-web
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
     volumes:
       - ./web:/usr/share/nginx/html:ro
       - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -134,5 +240,10 @@ services:
     restart: unless-stopped
 
 volumes:
-  kafka_data:
-  elasticsearch_data:
+  kafka1_data:
+  kafka2_data:
+  kafka3_data:
+  es01_data:
+  es02_data:
+  es03_data:
+  es_snapshots:

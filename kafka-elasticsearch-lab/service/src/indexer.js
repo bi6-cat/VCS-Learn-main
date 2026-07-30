@@ -1,13 +1,14 @@
 import { createKafka, env, esRequest, isValidEvent, sleep } from './lib.js';
 
-const kafka = createKafka('elasticsearch-indexer');
+const kafka = createKafka(`elasticsearch-indexer-${process.env.HOSTNAME || 'local'}`);
 const consumer = kafka.consumer({ groupId: env.groupId, allowAutoTopicCreation: false });
 const dlqProducer = kafka.producer({ allowAutoTopicCreation: false, idempotent: true });
 
 const indexDefinition = {
   settings: {
     number_of_shards: 3,
-    number_of_replicas: 0,
+    number_of_replicas: 2,
+    'index.write.wait_for_active_shards': '2',
     refresh_interval: '1s',
     analysis: {
       analyzer: {
@@ -43,14 +44,28 @@ const indexDefinition = {
 };
 
 async function ensureIndex() {
-  const response = await fetch(`${env.esUrl}/${env.esIndex}`, { method: 'HEAD' });
-  if (response.status === 404) {
-    await esRequest(`/${env.esIndex}`, { method: 'PUT', body: JSON.stringify(indexDefinition) });
-    console.log(`Created Elasticsearch index ${env.esIndex}`);
-    return;
+  try {
+    await esRequest(`/${env.esIndex}`, { method: 'HEAD' });
+    console.log(`Elasticsearch index ${env.esIndex} already exists`);
+    await esRequest(`/${env.esIndex}/_settings`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        index: {
+          number_of_replicas: 2,
+          'write.wait_for_active_shards': '2'
+        }
+      })
+    });
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    try {
+      await esRequest(`/${env.esIndex}`, { method: 'PUT', body: JSON.stringify(indexDefinition) });
+      console.log(`Created Elasticsearch index ${env.esIndex}`);
+    } catch (createError) {
+      if (createError.details?.error?.type !== 'resource_already_exists_exception') throw createError;
+      console.log(`Elasticsearch index ${env.esIndex} was created by another indexer`);
+    }
   }
-  if (!response.ok) throw new Error(`Cannot inspect Elasticsearch index: HTTP ${response.status}`);
-  console.log(`Elasticsearch index ${env.esIndex} already exists`);
 }
 
 async function indexWithRetry(event, metadata) {

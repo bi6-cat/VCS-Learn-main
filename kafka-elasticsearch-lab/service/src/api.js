@@ -5,14 +5,37 @@ import { createKafka, env, esRequest } from './lib.js';
 const app = express();
 const kafka = createKafka('customer-event-api');
 const producer = kafka.producer({ allowAutoTopicCreation: false, idempotent: true });
+const admin = kafka.admin();
 const allowedTypes = new Set(['view', 'search', 'add_to_cart', 'purchase', 'review']);
 
 app.use(express.json({ limit: '100kb' }));
 
 app.get('/api/health', async (_request, response) => {
   try {
-    const es = await esRequest('/_cluster/health');
-    response.json({ status: 'ok', kafka: 'connected', elasticsearch: es.status });
+    const [es, kafkaMetadata, kafkaCluster] = await Promise.all([
+      esRequest('/_cluster/health'),
+      admin.fetchTopicMetadata({ topics: [env.topic] }),
+      admin.describeCluster()
+    ]);
+    if (es.status === 'red' || es.timed_out) {
+      const error = new Error(`Elasticsearch cluster is not ready: status=${es.status}, timed_out=${es.timed_out}`);
+      error.status = 503;
+      throw error;
+    }
+    response.json({
+      status: 'ok',
+      kafka: {
+        status: 'connected',
+        brokers: kafkaCluster.brokers.length,
+        topic: env.topic,
+        partitions: kafkaMetadata.topics[0]?.partitions.length || 0
+      },
+      elasticsearch: {
+        status: es.status,
+        nodes: es.number_of_nodes,
+        dataNodes: es.number_of_data_nodes
+      }
+    });
   } catch (error) {
     response.status(503).json({ status: 'degraded', error: error.message });
   }
@@ -120,14 +143,14 @@ const port = Number(process.env.PORT || 3000);
 let server;
 
 async function start() {
-  await producer.connect();
+  await Promise.all([producer.connect(), admin.connect()]);
   server = app.listen(port, '0.0.0.0', () => console.log(`API listening on :${port}`));
 }
 
 async function shutdown(signal) {
   console.log(`${signal}: shutting down API`);
   if (server) await new Promise((resolve) => server.close(resolve));
-  await producer.disconnect();
+  await Promise.allSettled([producer.disconnect(), admin.disconnect()]);
   process.exit(0);
 }
 
