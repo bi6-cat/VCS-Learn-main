@@ -95,6 +95,7 @@ Port mapping của `kafka2` là `9093:9092` và `kafka3` là `9094:9092`: bên t
 | `x-kafka-common` và YAML anchor | `&kafka-common`, `&kafka-environment` | Gom cấu hình dùng chung; `<<: *...` merge vào từng broker để tránh ba khối bị lệch nhau. |
 | `image` | `apache/kafka:${KAFKA_VERSION:-4.3.1}` | Dùng biến môi trường nếu có, nếu không dùng bản mặc định `4.3.1` để lab lặp lại được. |
 | `restart` | `unless-stopped` | Docker tự khởi động lại broker khi process lỗi hoặc daemon restart, trừ khi người dùng chủ động stop. |
+| `working_dir` | `/opt/kafka/bin` | Cho phép gọi CLI ngắn như `./kafka-topics.sh` thay vì ghi `/opt/kafka/bin/...`. |
 | `hostname` | `kafka1`, `kafka2`, `kafka3` | Cung cấp hostname ổn định và trùng tên được quảng bá qua listener nội bộ. |
 | `ports` | Bind `127.0.0.1` | Chỉ cho host cục bộ truy cập; tránh vô tình công khai Kafka `PLAINTEXT` ra LAN/Internet. |
 | `volumes` | Một named volume mỗi broker | Cô lập log của từng node và cho phép mô phỏng node dừng/khôi phục độc lập. |
@@ -107,7 +108,7 @@ Port mapping của `kafka2` là `9093:9092` và `kafka3` là `9094:9092`: bên t
 
 | Tham số | Giá trị | Ý nghĩa |
 |---|---|---|
-| `--bootstrap-server` | Cả ba broker nội bộ | Chỉ cần kết nối được một broker để lấy metadata; danh sách ba địa chỉ tăng khả năng bootstrap khi một node lỗi. |
+| `--bootstrap-server` | `kafka1:19092` | Chỉ cần một broker ban đầu để lấy metadata. Bài failover dùng `kafka2` khi `kafka1` đang dừng. |
 | `--create` / `--if-not-exists` | Tạo topic / bỏ qua nếu đã tồn tại | Lab dùng `--create` để quan sát cả kết quả thành công lẫn lỗi tạo trùng. `--if-not-exists` hữu ích cho script automation nhưng có thể che mất bài học này. |
 | `--partitions` | `6` cho `kafka-feature-lab` | Quyết định mức song song tối đa của một consumer group và đơn vị đảm bảo thứ tự. |
 | `--replication-factor` | `3` | Mỗi partition có ba bản sao trên ba broker. RF gồm cả leader, không phải ba follower cộng leader. |
@@ -144,7 +145,7 @@ Lộ trình được sắp theo độ khó:
 | A0 | Dựng cluster Kafka độc lập và hiểu vòng đời Compose. | `up -d`, healthcheck, named volume, bootstrap list. | Ba broker healthy và topic list ban đầu rỗng; dữ liệu vẫn còn sau khi recreate container không kèm `-v`. |
 | A1 | Nắm mô hình dữ liệu và control plane Kafka. | Broker/controller, topic, partition, offset, record, RF, retention. | Phân biệt controller leader với partition leader và giải thích offset chỉ có nghĩa trong một partition. |
 | A2 | Quan sát partition, replica, leader và ISR. | `--describe`, `--partitions 6`, `--replication-factor 3`, `min.insync.replicas=2`. | Topic có 6 partition, mỗi partition ba replica; RF=4 thất bại vì chỉ có ba broker. |
-| A3 | Chứng minh key quyết định partition và phạm vi đảm bảo thứ tự. | `parse.key`, `key.separator`, `print.partition`, `print.offset`, `acks=all`, idempotence. | Cùng key vào cùng partition; offset tăng riêng; chỉ có ordering trong từng partition. |
+| A3 | Chứng minh key quyết định partition và phạm vi đảm bảo thứ tự. | `parse.key`, `key.separator`, `print.partition`, `print.offset`. | Cùng key vào cùng partition; offset tăng riêng; chỉ có ordering trong từng partition. |
 | A4 | Thực hành Pub/Sub và phân biệt subscriber với worker. | Hai group độc lập, nhiều member cùng group, committed offset, lag và rebalance. | Mỗi group nhận đủ event; các member trong cùng group chia partition và không xử lý trùng một record tại cùng thời điểm. |
 | A5 | Hiểu committed offset và replay có kiểm soát. | `--reset-offsets`, `--to-earliest`, `--dry-run`, `--execute`. | Group đọc lại record cũ mà record/offset trong log không bị copy hay đánh số lại; group khác không đổi. |
 | A6 | Quan sát retention theo segment và tính append-only. | `cleanup.policy=delete`, `retention.ms=30000`, `segment.ms=10000`, `file.delete.delay.ms=1000`, earliest/latest. | Earliest offset tiến lên sau cleanup; consumer đọc xong không làm message bị xóa. |
@@ -185,13 +186,18 @@ docker compose -f docker-compose.kafka.yml up -d kafka1 kafka2 kafka3
 docker compose -f docker-compose.kafka.yml ps -a kafka-setup kafka1 kafka2 kafka3
 ```
 
-Ba broker dùng chung KRaft quorum nhưng mỗi broker có named volume riêng. Các lệnh CLI bên dưới chạy từ `kafka1`; bootstrap list chứa cả ba broker để client vẫn lấy metadata nếu một broker lỗi.
+**Giải thích lệnh:** `-f` chọn đúng Compose dành cho Kafka; `up -d` tạo và chạy container ở background; danh sách ba service tránh khởi động ZooKeeper; `ps -a` hiển thị cả job `kafka-setup` đã chạy xong với trạng thái `Exited (0)`.
 
-```bash
-export KAFKA_BOOTSTRAP='kafka1:19092,kafka2:19092,kafka3:19092'
-```
+> **Nếu đã tạo container trước khi tài liệu thêm `working_dir`:** `docker compose up` không tự tạo lại container chỉ vì file Compose vừa thay đổi ở một số môi trường. Chạy một lần:
+>
+> ```bash
+> docker compose -f docker-compose.kafka.yml up -d --force-recreate kafka1 kafka2 kafka3
+> docker compose -f docker-compose.kafka.yml exec kafka1 pwd
+> ```
+>
+> `pwd` phải trả `/opt/kafka/bin`. `--force-recreate` chỉ tạo lại container, không xóa named volume hay dữ liệu Kafka. Nếu vẫn thấy thư mục khác, kiểm tra đang chạy đúng file bằng `docker compose -f docker-compose.kafka.yml config | grep working_dir`.
 
-Biến trên tồn tại ở shell host; trong từng lệnh `docker compose -f docker-compose.kafka.yml exec`, tài liệu vẫn ghi bootstrap list đầy đủ để dễ copy độc lập.
+Ba broker dùng chung KRaft quorum nhưng mỗi broker có named volume riêng. Các lệnh CLI chạy từ `kafka1` và dùng broker này làm điểm bootstrap. Kafka sẽ trả metadata của toàn cluster sau kết nối đầu tiên; riêng bài failover dùng `kafka2` khi `kafka1` đang dừng.
 
 Các lệnh Compose thông dụng trong toàn bộ lab:
 
@@ -209,8 +215,8 @@ Các lệnh Compose thông dụng trong toàn bộ lab:
 Kiểm tra topic trước khi tự tạo:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 --list
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 --list
 ```
 
 > ✅ **Đầu ra dự kiến:** `kafka1`, `kafka2`, `kafka3` ở trạng thái `healthy`; `kafka-setup` là `Exited (0)`. Nếu dùng volume mới, lệnh `--list` không in topic nghiệp vụ nào.
@@ -251,15 +257,15 @@ KRaft dùng quorum controller và metadata log thay cho ZooKeeper. Lab có quoru
 Liệt kê topic để xác nhận trạng thái hiện tại:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 --list
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 --list
 ```
 
 Tự tạo topic dùng xuyên suốt các lab Kafka:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --create --topic kafka-feature-lab \
   --partitions 6 --replication-factor 3 \
   --config min.insync.replicas=2 \
@@ -267,11 +273,21 @@ docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topi
   --config retention.ms=604800000
 ```
 
+**Giải thích lệnh:**
+
+- `exec kafka1`: chạy Kafka CLI bên trong broker `kafka1`; không tạo container mới.
+- `--bootstrap-server`: broker đầu tiên để CLI lấy metadata cluster, không có nghĩa mọi request luôn đi qua `kafka1`.
+- `--partitions 6`: tạo sáu log độc lập, cho phép tối đa sáu consumer cùng group có partition để xử lý.
+- `--replication-factor 3`: mỗi partition có tổng cộng ba bản, gồm một leader và hai follower.
+- `min.insync.replicas=2`: ghi `acks=all` cần ít nhất hai replica đang đồng bộ.
+- `unclean.leader.election.enable=false`: không bầu replica đã tụt khỏi ISR làm leader vì có nguy cơ mất dữ liệu.
+- `retention.ms=604800000`: giữ record trong bảy ngày trước khi đủ điều kiện cleanup.
+
 Mô tả topic vừa tạo:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --describe --topic kafka-feature-lab
 ```
 
@@ -280,8 +296,8 @@ Cần thấy `PartitionCount: 6`, `ReplicationFactor: 3`, `min.insync.replicas=2
 Thử yêu cầu RF lớn hơn số broker:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --create --topic should-fail \
   --partitions 1 --replication-factor 4
 ```
@@ -296,32 +312,36 @@ Lệnh cuối phải thất bại vì cluster chỉ có ba broker. Replica của
 
 ## A3. Lab producer, key, partition, offset và thứ tự
 
-> **Mục đích:** Chứng minh key quyết định nơi record được ghi và Kafka chỉ đảm bảo thứ tự trong một partition. **Trọng tâm:** `parse.key`, `key.separator`, `print.partition`, `print.offset`, `acks=all` và idempotent producer.
+> **Mục đích:** Chứng minh key quyết định nơi record được ghi và Kafka chỉ đảm bảo thứ tự trong một partition. **Trọng tâm:** `parse.key`, `key.separator`, `print.partition` và `print.offset`.
 
 Mở Terminal 1, chạy consumer in key, partition, offset:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-console-consumer.sh \
+  --bootstrap-server kafka1:19092 \
   --topic kafka-feature-lab \
   --from-beginning \
   --formatter-property print.key=true \
   --formatter-property print.partition=true \
-  --formatter-property print.offset=true \
-  --formatter-property key.separator=' | '
+  --formatter-property print.offset=true
 ```
 
 Mở Terminal 2, chạy producer nhận `key:value`:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec -it kafka1 /opt/kafka/bin/kafka-console-producer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec -it kafka1 ./kafka-console-producer.sh \
+  --bootstrap-server kafka1:19092 \
   --topic kafka-feature-lab \
   --reader-property parse.key=true \
-  --reader-property key.separator=: \
-  --command-property acks=all \
-  --command-property enable.idempotence=true
+  --reader-property key.separator=:
 ```
+
+**Giải thích lệnh:**
+
+- `-it`: giữ terminal tương tác để nhập từng record; thoát bằng `Ctrl+C`.
+- `parse.key=true`: yêu cầu producer tách mỗi dòng thành key và value.
+- `key.separator=:`: phần trước dấu `:` là key, phần sau là value.
+- Các `print.*` ở consumer chỉ thay đổi cách hiển thị để quan sát; chúng không sửa record trong Kafka.
 
 Nhập lần lượt:
 
@@ -340,7 +360,7 @@ Nhấn `Ctrl+C`. Quan sát:
 - Kafka đảm bảo thứ tự trong **một partition**, không đảm bảo thứ tự toàn topic.
 - Không có key thì producer có thể phân phối batch theo partitioner; không nên dựa vào một thứ tự toàn cục.
 
-> ✅ **Đầu ra dự kiến:** Consumer in các dòng có dạng `user-001 | Partition:<n> | Offset:<m> | <value>`. Ba record `user-001` cùng partition và offset tăng dần trong partition đó; key khác có thể ở partition khác.
+> ✅ **Đầu ra dự kiến:** Consumer in partition, offset, key và value trên mỗi dòng, ví dụ `Partition:<n> Offset:<m> user-001 view-product-A`. Ba record `user-001` cùng partition và offset tăng dần trong partition đó; key khác có thể ở partition khác.
 >
 > **Tại sao:** producer hash key để chọn partition. Offset là vị trí append trong một partition, vì vậy Kafka chỉ bảo toàn thứ tự theo partition.
 
@@ -368,24 +388,23 @@ flowchart LR
 Tạo topic riêng để kết quả không lẫn record từ A3:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --create --topic pubsub-lab \
-  --partitions 3 --replication-factor 3 \
-  --config min.insync.replicas=2
+  --partitions 3 --replication-factor 3
 ```
 
 Gửi sáu event:
 
 ```bash
-printf 'order-01:created\norder-02:paid\norder-03:created\norder-04:shipped\norder-05:paid\norder-06:cancelled\n' \
+printf 'order-01 created\norder-02 paid\norder-03 created\norder-04 shipped\norder-05 paid\norder-06 cancelled\n' \
   | docker compose -f docker-compose.kafka.yml exec -T kafka1 \
-      /opt/kafka/bin/kafka-console-producer.sh \
-      --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
-      --topic pubsub-lab \
-      --reader-property parse.key=true \
-      --reader-property key.separator=:
+      ./kafka-console-producer.sh \
+      --bootstrap-server kafka1:19092 \
+      --topic pubsub-lab
 ```
+
+**Giải thích lệnh producer:** `printf` tạo sáu dòng input; toán tử `|` chuyển chúng vào standard input của producer; `exec -T` tắt pseudo-TTY để pipe hoạt động ổn định. Mỗi dòng trở thành một record có value và không có key.
 
 ### A4.2. Hai subscriber đều nhận đủ event
 
@@ -393,26 +412,22 @@ printf 'order-01:created\norder-02:paid\norder-03:created\norder-04:shipped\nord
 
 ```bash
 docker compose -f docker-compose.kafka.yml exec kafka1 \
-  /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+  ./kafka-console-consumer.sh \
+  --bootstrap-server kafka1:19092 \
   --topic pubsub-lab --group notifications \
-  --from-beginning --max-messages 6 \
-  --formatter-property print.key=true \
-  --formatter-property print.partition=true \
-  --formatter-property print.offset=true
+  --from-beginning --max-messages 6
 ```
+
+**Giải thích lệnh subscriber:** `--group notifications` tạo con trỏ offset riêng cho subscriber này; `--from-beginning` đọc từ earliest khi group chưa từng commit; `--max-messages 6` tự thoát sau sáu record để lab không phải dừng thủ công.
 
 Chạy lại với subscriber khác:
 
 ```bash
 docker compose -f docker-compose.kafka.yml exec kafka1 \
-  /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+  ./kafka-console-consumer.sh \
+  --bootstrap-server kafka1:19092 \
   --topic pubsub-lab --group analytics \
-  --from-beginning --max-messages 6 \
-  --formatter-property print.key=true \
-  --formatter-property print.partition=true \
-  --formatter-property print.offset=true
+  --from-beginning --max-messages 6
 ```
 
 `--from-beginning` chỉ áp dụng khi group chưa có committed offset. `--max-messages 6` giúp CLI tự thoát sau khi nhận đủ sáu record.
@@ -427,22 +442,21 @@ Mở Terminal 1 và Terminal 2, chạy cùng lệnh sau trên cả hai terminal 
 
 ```bash
 docker compose -f docker-compose.kafka.yml exec kafka1 \
-  /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
-  --topic pubsub-lab --group demo-workers \
-  --formatter-property print.key=true \
-  --formatter-property print.partition=true \
-  --formatter-property print.offset=true
+  ./kafka-console-consumer.sh \
+  --bootstrap-server kafka1:19092 \
+  --topic pubsub-lab --group demo-workers
 ```
 
 Chờ vài giây để hai worker join group, rồi ở Terminal 3 gửi thêm event bằng producer ở A4.1. Quan sát hai terminal consumer và kiểm tra assignment:
 
 ```bash
 docker compose -f docker-compose.kafka.yml exec kafka1 \
-  /opt/kafka/bin/kafka-consumer-groups.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+  ./kafka-consumer-groups.sh \
+  --bootstrap-server kafka1:19092 \
   --describe --group demo-workers
 ```
+
+**Giải thích lệnh worker:** hai terminal dùng cùng `--group demo-workers` nên Kafka chia partition giữa chúng. `--describe` chỉ đọc trạng thái assignment, offset và lag; không làm consumer group rebalance hay đổi offset.
 
 Các cột thường dùng:
 
@@ -466,22 +480,30 @@ Dừng một worker bằng `Ctrl+C`; sau vài giây worker còn lại nhận cá
 Dừng toàn bộ consumer thuộc `demo-workers`, kiểm tra group ở trạng thái không active rồi reset về đầu:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-consumer-groups.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-consumer-groups.sh \
+  --bootstrap-server kafka1:19092 \
   --group demo-workers --topic pubsub-lab \
   --reset-offsets --to-earliest --dry-run
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-consumer-groups.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-consumer-groups.sh \
+  --bootstrap-server kafka1:19092 \
   --group demo-workers --topic pubsub-lab \
   --reset-offsets --to-earliest --execute
 ```
 
+**Giải thích lệnh:**
+
+- `--group` và `--topic`: giới hạn đúng con trỏ cần thay đổi, không ảnh hưởng group khác.
+- `--reset-offsets`: chuyển committed offset; không sửa hoặc nhân bản record trong partition log.
+- `--to-earliest`: đặt mỗi partition về offset sớm nhất hiện còn sau retention.
+- `--dry-run`: chỉ xem trước kết quả, nên luôn chạy trước.
+- `--execute`: áp dụng thay đổi thật; group phải không còn consumer active.
+
 Chạy lại consumer cùng group, record cũ xuất hiện lại:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-console-consumer.sh \
+  --bootstrap-server kafka1:19092 \
   --topic pubsub-lab --group demo-workers \
   --formatter-property print.partition=true --formatter-property print.offset=true
 ```
@@ -501,8 +523,8 @@ Replay không copy record và không đổi offset của record; nó đổi comm
 Xem cấu hình topic của lab:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-configs.sh \
+  --bootstrap-server kafka1:19092 \
   --entity-type topics --entity-name kafka-feature-lab --describe
 ```
 
@@ -511,39 +533,47 @@ docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-conf
 Thử trên topic riêng một partition để dễ quan sát. Topic vẫn có RF=3; Kafka xóa theo **segment**, vì vậy cần tạo segment mới và chờ background retention scan (`10s` trong Compose):
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --create --if-not-exists --topic kafka-retention-lab \
   --partitions 1 --replication-factor 3 \
-  --config min.insync.replicas=2 \
   --config cleanup.policy=delete \
   --config retention.ms=30000 \
   --config segment.ms=10000 \
   --config file.delete.delay.ms=1000
 
 printf 'old-0\nold-1\n' \
-  | docker compose -f docker-compose.kafka.yml exec -T kafka1 /opt/kafka/bin/kafka-console-producer.sh \
-      --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
-      --topic kafka-retention-lab --command-property acks=all
+  | docker compose -f docker-compose.kafka.yml exec -T kafka1 ./kafka-console-producer.sh \
+      --bootstrap-server kafka1:19092 \
+      --topic kafka-retention-lab
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-get-offsets.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-get-offsets.sh \
+  --bootstrap-server kafka1:19092 \
   --topic kafka-retention-lab --time earliest
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-get-offsets.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-get-offsets.sh \
+  --bootstrap-server kafka1:19092 \
   --topic kafka-retention-lab --time latest
 
 sleep 12
 printf 'retention-roll\n' \
-  | docker compose -f docker-compose.kafka.yml exec -T kafka1 /opt/kafka/bin/kafka-console-producer.sh \
-      --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
-      --topic kafka-retention-lab --command-property acks=all
+  | docker compose -f docker-compose.kafka.yml exec -T kafka1 ./kafka-console-producer.sh \
+      --bootstrap-server kafka1:19092 \
+      --topic kafka-retention-lab
 sleep 45
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-get-offsets.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-get-offsets.sh \
+  --bootstrap-server kafka1:19092 \
   --topic kafka-retention-lab --time earliest
 ```
+
+**Giải thích lệnh:**
+
+- `cleanup.policy=delete`: xóa segment khi quá thời gian hoặc dung lượng retention.
+- `retention.ms=30000`: record đủ điều kiện hết hạn sau 30 giây; không bảo đảm bị xóa đúng giây thứ 30.
+- `segment.ms=10000`: roll segment sớm để bài lab không phải chờ segment mặc định rất lâu.
+- `file.delete.delay.ms=1000`: trì hoãn xóa file vật lý một giây sau khi Kafka đánh dấu segment.
+- `--time earliest/latest`: đọc offset đầu tiên còn tồn tại và offset cuối log để so sánh trước/sau cleanup.
+- `sleep`: chờ segment roll và background retention checker; đây là cơ chế bất đồng bộ nên kết quả có thể muộn hơn một chu kỳ.
 
 Earliest offset có thể tiến lên và xuất hiện khoảng trống; offset không được đánh số lại. Thời gian vẫn là eventual vì retention scan chạy nền.
 
@@ -587,14 +617,16 @@ Indexer dùng `autoCommit: false`; chỉ commit offset kế tiếp sau khi Elast
 Kiểm tra leader của metadata quorum và độ trễ follower:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-metadata-quorum.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-metadata-quorum.sh \
+  --bootstrap-server kafka1:19092 \
   describe --status
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-metadata-quorum.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-metadata-quorum.sh \
+  --bootstrap-server kafka1:19092 \
   describe --replication
 ```
+
+**Giải thích lệnh:** `describe --status` tóm tắt leader, epoch và danh sách voter; `describe --replication` đi sâu vào offset/lag của từng controller. Hai lệnh chỉ đọc metadata, không thay đổi quorum.
 
 Đọc các trường `LeaderId`, `CurrentVoters`, `HighWatermark`, `LogEndOffset` và `Lag`. Controller leader quản lý metadata; partition leader quản lý read/write của một data partition. Đây là hai loại leader khác nhau.
 
@@ -611,8 +643,8 @@ docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-meta
 Mô tả topic trước sự cố:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --describe --topic kafka-feature-lab
 ```
 
@@ -626,10 +658,12 @@ Dừng một broker. Chọn `kafka1` vì các lệnh CLI sau có thể chạy t�
 docker compose -f docker-compose.kafka.yml stop kafka1
 docker compose -f docker-compose.kafka.yml ps kafka1 kafka2 kafka3
 
-docker compose -f docker-compose.kafka.yml exec kafka2 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka2 ./kafka-topics.sh \
+  --bootstrap-server kafka2:19092 \
   --describe --topic kafka-feature-lab
 ```
+
+**Giải thích lệnh:** `stop` chỉ dừng container và giữ volume, phù hợp mô phỏng broker chết có thể phục hồi. CLI được chuyển sang chạy trong `kafka2` vì không thể `exec` vào container `kafka1` đang dừng.
 
 Quan sát:
 
@@ -641,31 +675,33 @@ Quan sát:
 Gửi và đọc record khi một broker dừng:
 
 ```bash
-printf 'ha-user:event-while-kafka1-down\n' \
-  | docker compose -f docker-compose.kafka.yml exec -T kafka2 /opt/kafka/bin/kafka-console-producer.sh \
-      --bootstrap-server kafka2:19092,kafka3:19092 \
-      --topic kafka-feature-lab \
-      --reader-property parse.key=true --reader-property key.separator=: \
-      --command-property acks=all
+printf 'event-while-kafka1-down\n' \
+  | docker compose -f docker-compose.kafka.yml exec -T kafka2 ./kafka-console-producer.sh \
+      --bootstrap-server kafka2:19092 \
+      --topic kafka-feature-lab
 
-docker compose -f docker-compose.kafka.yml exec kafka2 /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka2 ./kafka-console-consumer.sh \
+  --bootstrap-server kafka2:19092 \
   --topic kafka-feature-lab --from-beginning --timeout-ms 10000 \
   | grep 'event-while-kafka1-down'
 ```
+
+**Giải thích lệnh:** `-T` tắt pseudo-TTY để nhận dữ liệu từ `printf`; `--timeout-ms 10000` tự thoát nếu 10 giây không có thêm record; `grep` chỉ lọc record kiểm chứng, không tác động Kafka.
 
 Khôi phục broker và chờ nó bắt kịp ISR:
 
 ```bash
 docker compose -f docker-compose.kafka.yml start kafka1
-until docker compose -f docker-compose.kafka.yml exec -T kafka1 /opt/kafka/bin/kafka-broker-api-versions.sh \
+until docker compose -f docker-compose.kafka.yml exec -T kafka1 ./kafka-broker-api-versions.sh \
   --bootstrap-server kafka1:19092 >/dev/null 2>&1; do sleep 3; done
 sleep 5
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --describe --topic kafka-feature-lab
 ```
+
+**Giải thích vòng `until`:** `docker compose start` chỉ cho biết container đã chạy, chưa bảo đảm Kafka API sẵn sàng. Vòng lặp thử API mỗi ba giây; mã thoát `0` mới kết thúc vòng chờ. `>/dev/null 2>&1` ẩn output của các lần thử thất bại.
 
 > 📸 **BÁO CÁO A9:** Chụp leader/ISR trước, trong và sau sự cố; kèm record được produce khi `kafka1` dừng. Không dùng `docker compose -f docker-compose.kafka.yml down -v` trong bài vì sẽ xóa log cần recovery.
 
@@ -676,8 +712,8 @@ docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topi
 Đây là cách chứng minh durability policy, không cần dừng hai controller làm mất quorum. Tạm nâng min ISR của topic lab lên 3:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-configs.sh \
+  --bootstrap-server kafka1:19092 \
   --entity-type topics --entity-name kafka-feature-lab \
   --alter --add-config min.insync.replicas=3
 
@@ -688,8 +724,8 @@ Producer yêu cầu tất cả ISR xác nhận sẽ thất bại vì chỉ còn 
 
 ```bash
 printf 'durability-user:must-fail\n' \
-  | docker compose -f docker-compose.kafka.yml exec -T kafka1 /opt/kafka/bin/kafka-console-producer.sh \
-      --bootstrap-server kafka1:19092,kafka2:19092 \
+  | docker compose -f docker-compose.kafka.yml exec -T kafka1 ./kafka-console-producer.sh \
+      --bootstrap-server kafka1:19092 \
       --topic kafka-feature-lab \
       --reader-property parse.key=true --reader-property key.separator=: \
       --command-property acks=all \
@@ -697,17 +733,25 @@ printf 'durability-user:must-fail\n' \
       --command-property delivery.timeout.ms=10000
 ```
 
+**Giải thích lệnh:**
+
+- `--alter --add-config min.insync.replicas=3`: đổi riêng cấu hình topic, không đổi mặc định toàn broker.
+- `acks=all`: leader chỉ báo thành công sau khi toàn bộ ISR hiện tại xác nhận.
+- `request.timeout.ms=5000`: mỗi request được chờ tối đa năm giây.
+- `delivery.timeout.ms=10000`: giới hạn tổng thời gian gửi, gồm cả retry; phải lớn hơn request timeout.
+- Các timeout ngắn chỉ dùng để lab báo lỗi nhanh, không phải giá trị khuyến nghị production.
+
 Cần thấy lỗi kiểu `NotEnoughReplicas` hoặc timeout liên quan số ISR. Khôi phục ngay:
 
 ```bash
 docker compose -f docker-compose.kafka.yml start kafka3
 sleep 8
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-configs.sh \
+  --bootstrap-server kafka1:19092 \
   --entity-type topics --entity-name kafka-feature-lab \
   --alter --add-config min.insync.replicas=2
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-configs.sh \
+  --bootstrap-server kafka1:19092 \
   --entity-type topics --entity-name kafka-feature-lab --describe
 ```
 
@@ -726,22 +770,24 @@ docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-conf
 Kafka cho phép tăng nhưng không cho giảm số partition:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --alter --topic kafka-feature-lab --partitions 9
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --describe --topic kafka-feature-lab
 ```
+
+**Giải thích lệnh:** `--alter --partitions 9` đặt **tổng số partition mới** là 9, không phải cộng thêm 9. `--describe` được chạy ngay sau đó để xác minh metadata đã đổi.
 
 Partition mới được replica trên ba broker. Với partitioner dạng hash, phép chia theo số partition thay đổi nên cùng key có thể vào partition khác đối với record **mới** sau khi tăng. Thứ tự lịch sử của key trên toàn bộ thời gian vì thế không còn nằm trong duy nhất một partition. Chỉ tăng partition sau khi đánh giá ordering contract và năng lực consumer.
 
 Thử giảm để thấy Kafka từ chối:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --alter --topic kafka-feature-lab --partitions 6
 ```
 
@@ -758,8 +804,8 @@ docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topi
 Tạo topic trạng thái khách hàng. Key đại diện entity; compact giữ giá trị mới nhất theo key:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --create --if-not-exists --topic customer-state-lab \
   --partitions 1 --replication-factor 3 \
   --config min.insync.replicas=2 \
@@ -775,36 +821,43 @@ printf '%s\n' \
   'user-002:{"tier":"gold"}' \
   'user-001:{"tier":"gold"}' \
   'user-002:NULL' \
-  | docker compose -f docker-compose.kafka.yml exec -T kafka1 /opt/kafka/bin/kafka-console-producer.sh \
-      --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+  | docker compose -f docker-compose.kafka.yml exec -T kafka1 ./kafka-console-producer.sh \
+      --bootstrap-server kafka1:19092 \
       --topic customer-state-lab \
       --reader-property parse.key=true \
       --reader-property key.separator=: \
-      --reader-property null.marker=NULL \
-      --command-property acks=all
+      --reader-property null.marker=NULL
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-console-consumer.sh \
+  --bootstrap-server kafka1:19092 \
   --topic customer-state-lab --from-beginning --max-messages 4 \
   --formatter-property print.key=true \
   --formatter-property print.offset=true \
   --formatter-property null.literal='<NULL>'
 ```
 
+**Giải thích lệnh:**
+
+- `cleanup.policy=compact`: giữ phiên bản mới nhất theo key thay vì xóa thuần theo tuổi.
+- `min.cleanable.dirty.ratio=0.01`: cho cleaner chạy khi phần log có thể làm sạch đạt khoảng 1%; giá trị thấp giúp lab quan sát sớm.
+- `min/max.compaction.lag.ms`: giới hạn thời điểm record được phép/phải được xem xét cho compaction.
+- `delete.retention.ms`: thời gian giữ tombstone để consumer chậm còn nhìn thấy thao tác xóa.
+- `null.marker=NULL`: biến chuỗi `NULL` ở input thành value null thật; nếu bỏ cờ này thì Kafka chỉ lưu bốn ký tự `NULL`.
+- `null.literal='<NULL>'`: chỉ cách consumer hiển thị value null, không thay đổi dữ liệu.
+
 `user-002:NULL` tạo tombstone thật: key có value null. Compaction chạy nền theo segment, không xóa bản cũ ngay lập tức và không thay thế database. Có thể ép roll segment rồi chờ cleaner để quan sát eventual result:
 
 ```bash
 sleep 12
 printf 'roll:trigger\n' \
-  | docker compose -f docker-compose.kafka.yml exec -T kafka1 /opt/kafka/bin/kafka-console-producer.sh \
-      --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+  | docker compose -f docker-compose.kafka.yml exec -T kafka1 ./kafka-console-producer.sh \
+      --bootstrap-server kafka1:19092 \
       --topic customer-state-lab \
-      --reader-property parse.key=true --reader-property key.separator=: \
-      --command-property acks=all
+      --reader-property parse.key=true --reader-property key.separator=:
 sleep 45
 
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-console-consumer.sh \
+  --bootstrap-server kafka1:19092 \
   --topic customer-state-lab --from-beginning --timeout-ms 5000 \
   --formatter-property print.key=true \
   --formatter-property print.offset=true \
@@ -837,19 +890,21 @@ Kết quả không có deadline tuyệt đối: cuối cùng `user-001` chỉ c�
 Dọn riêng dữ liệu lab Kafka sau khi đã chụp báo cáo:
 
 ```bash
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --delete --topic kafka-feature-lab --if-exists
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --delete --topic pubsub-lab --if-exists
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --delete --topic customer-state-lab --if-exists
-docker compose -f docker-compose.kafka.yml exec kafka1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server kafka1:19092,kafka2:19092,kafka3:19092 \
+docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
+  --bootstrap-server kafka1:19092 \
   --delete --topic kafka-retention-lab --if-exists
 ```
+
+**Giải thích lệnh:** `--delete` xóa metadata và dữ liệu của đúng topic được nêu; `--if-exists` biến thao tác thành an toàn khi chạy lại hoặc khi đã bỏ qua một lab. Nó không tương đương `down -v`, vốn xóa toàn bộ volume cluster.
 
 > ✅ **Đầu ra dự kiến:** Các topic thử nghiệm đã chạy không còn trong `kafka-topics.sh --list`. `--if-exists` giúp bước dọn không lỗi khi bạn bỏ qua một bài tùy chọn. Với volume lab bắt đầu sạch, danh sách topic nghiệp vụ sẽ rỗng.
 >
@@ -893,7 +948,7 @@ docker compose -f docker-compose.kafka.yml --profile zookeeper up -d zookeeper z
 docker compose -f docker-compose.kafka.yml --profile zookeeper ps zookeeper zk-kafka
 ```
 
-`--profile zookeeper` kích hoạt hai service vốn bị tắt mặc định. `depends_on: service_healthy` buộc `zk-kafka` chờ ZooKeeper trả lời trước khi start.
+**Giải thích lệnh:** `--profile zookeeper` kích hoạt hai service vốn bị tắt mặc định; `-d` chạy nền; danh sách service cuối lệnh tránh khởi động nhầm cụm KRaft. `depends_on: service_healthy` buộc `zk-kafka` chờ ZooKeeper trả lời trước khi start.
 
 > ✅ **Đầu ra dự kiến:** `zookeeper` và `zk-kafka` đều `healthy`; host port lần lượt là `2181` và `9095`.
 >
@@ -927,6 +982,8 @@ printf 'ls /\nls /brokers/ids\nget /controller\nquit\n' \
   | docker compose -f docker-compose.kafka.yml --profile zookeeper exec -T zookeeper \
       zookeeper-shell localhost:2181
 ```
+
+**Giải thích lệnh:** `printf` tạo chuỗi lệnh ZooKeeper, `|` đưa chúng vào shell và `-T` tắt chế độ tương tác. Cách này cho output lặp lại được để chụp báo cáo; còn cách phía trên phù hợp khi muốn tự gõ và khám phá.
 
 | Lệnh | Giải thích |
 |---|---|
@@ -1010,6 +1067,8 @@ printf 'ls /brokers/ids\nquit\n' \
       zookeeper-shell localhost:2181
 ```
 
+**Giải thích lệnh:** `sleep 10` cho ZooKeeper thời gian xử lý việc đóng/hết session trước khi kiểm tra ephemeral znode. Khi start lại, vòng `until` chờ Kafka API phản hồi thay vì giả định container start đồng nghĩa broker đã sẵn sàng.
+
 > ✅ **Đầu ra dự kiến:** Danh sách chuyển từ `[101]` thành `[]` sau khi broker/session mất, rồi trở lại `[101]` khi broker đăng ký session mới.
 >
 > **Tại sao:** `/brokers/ids/101` là ephemeral znode. ZooKeeper tự xóa nó khi session hết hạn, giúp controller biết broker không còn hoạt động mà không cần một tiến trình dọn thủ công.
@@ -1028,6 +1087,8 @@ docker compose -f docker-compose.kafka.yml --profile zookeeper exec -T zk-kafka 
   --partitions 1 --replication-factor 1
 ```
 
+**Giải thích lệnh:** `timeout 15` là lệnh Linux bọc Kafka CLI và cưỡng bức dừng sau 15 giây; mã thoát thường là `124`. Nó ngăn terminal treo lâu khi control plane không còn ZooKeeper. `-T` tránh cấp terminal tương tác cho lệnh dùng trong kịch bản tự động.
+
 Khôi phục ngay:
 
 ```bash
@@ -1039,6 +1100,8 @@ sleep 5
 docker compose -f docker-compose.kafka.yml --profile zookeeper exec zk-kafka kafka-topics \
   --bootstrap-server zk-kafka:29095 --list
 ```
+
+**Giải thích vòng chờ:** `cub zk-ready localhost:2181 5` thử kết nối ZooKeeper trong tối đa năm giây. Vòng `until` lặp lại sau mỗi ba giây; `sleep 5` tiếp theo cho broker thêm thời gian nối lại session trước khi kiểm tra topic.
 
 > ✅ **Đầu ra dự kiến:** Lệnh `timeout 15 ...` kết thúc với mã `124` (hoặc Kafka CLI báo timeout/lỗi controller). Sau khi ZooKeeper trở lại và session được nối lại, topic list hoạt động; `should-timeout` có thể không tồn tại **hoặc vẫn xuất hiện** vì broker hoàn tất request sau lúc client đã timeout.
 >
