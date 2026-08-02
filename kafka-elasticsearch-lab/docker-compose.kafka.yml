@@ -1,0 +1,131 @@
+name: kafka-lab
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+  restart: unless-stopped
+  environment: &kafka-environment
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:29093,2@kafka2:29093,3@kafka3:29093
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 10000
+    KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  healthcheck: &kafka-healthcheck
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
+    interval: 10s
+    timeout: 10s
+    retries: 18
+    start_period: 30s
+  depends_on:
+    kafka-setup:
+      condition: service_completed_successfully
+
+services:
+  kafka-setup:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    user: "0"
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["chown -R 1000:1000 /kafka1 /kafka2 /kafka3"]
+    volumes:
+      - kafka1_data:/kafka1
+      - kafka2_data:/kafka2
+      - kafka3_data:/kafka3
+
+  kafka1:
+    <<: *kafka-common
+    hostname: kafka1
+    ports:
+      - "127.0.0.1:9092:9092"
+    environment:
+      <<: *kafka-environment
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:19092,HOST://localhost:9092
+    volumes:
+      - kafka1_data:/tmp/kraft-combined-logs
+
+  kafka2:
+    <<: *kafka-common
+    hostname: kafka2
+    ports:
+      - "127.0.0.1:9093:9092"
+    environment:
+      <<: *kafka-environment
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:19092,HOST://localhost:9093
+    volumes:
+      - kafka2_data:/tmp/kraft-combined-logs
+
+  kafka3:
+    <<: *kafka-common
+    hostname: kafka3
+    ports:
+      - "127.0.0.1:9094:9092"
+    environment:
+      <<: *kafka-environment
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:19092,HOST://localhost:9094
+    volumes:
+      - kafka3_data:/tmp/kraft-combined-logs
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.7.1
+    profiles: ["zookeeper"]
+    hostname: zookeeper
+    ports:
+      - "127.0.0.1:2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "cub zk-ready localhost:2181 30"]
+      interval: 10s
+      timeout: 35s
+      retries: 10
+      start_period: 20s
+
+  zk-kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    profiles: ["zookeeper"]
+    hostname: zk-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9095:9092"
+    environment:
+      KAFKA_BROKER_ID: 101
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://:29095,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://zk-kafka:29095,HOST://localhost:9095
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - zk_kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29095 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 30s
+
+volumes:
+  kafka1_data:
+  kafka2_data:
+  kafka3_data:
+  zookeeper_data:
+  zookeeper_log:
+  zk_kafka_data:

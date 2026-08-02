@@ -1,0 +1,77 @@
+name: elasticsearch-lab
+
+x-es-common: &es-common
+  image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
+  restart: unless-stopped
+  environment: &es-environment
+    cluster.name: elasticsearch-lab
+    discovery.seed_hosts: es01,es02,es03
+    cluster.initial_master_nodes: es01,es02,es03
+    xpack.security.enabled: "false"
+    path.repo: /snapshots
+    ES_JAVA_OPTS: -Xms768m -Xmx768m
+  healthcheck: &es-healthcheck
+    test: ["CMD-SHELL", "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 50s
+
+services:
+  es-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
+    user: "0"
+    command: ["/bin/bash", "-c", "chown -R 1000:0 /snapshots && chmod 0770 /snapshots"]
+    volumes:
+      - es_snapshots:/snapshots
+
+  es01:
+    <<: *es-common
+    hostname: es01
+    ports:
+      - "127.0.0.1:${ES_PORT:-9200}:9200"
+    environment:
+      <<: *es-environment
+      node.name: es01
+    volumes:
+      - es01_data:/usr/share/elasticsearch/data
+      - es_snapshots:/snapshots
+    depends_on:
+      es-setup:
+        condition: service_completed_successfully
+
+  es02:
+    <<: *es-common
+    hostname: es02
+    ports:
+      - "127.0.0.1:${ES_PORT_2:-9201}:9200"
+    environment:
+      <<: *es-environment
+      node.name: es02
+    volumes:
+      - es02_data:/usr/share/elasticsearch/data
+      - es_snapshots:/snapshots
+    depends_on:
+      es-setup:
+        condition: service_completed_successfully
+
+  es03:
+    <<: *es-common
+    hostname: es03
+    ports:
+      - "127.0.0.1:${ES_PORT_3:-9202}:9200"
+    environment:
+      <<: *es-environment
+      node.name: es03
+    volumes:
+      - es03_data:/usr/share/elasticsearch/data
+      - es_snapshots:/snapshots
+    depends_on:
+      es-setup:
+        condition: service_completed_successfully
+
+volumes:
+  es01_data:
+  es02_data:
+  es03_data:
+  es_snapshots:
