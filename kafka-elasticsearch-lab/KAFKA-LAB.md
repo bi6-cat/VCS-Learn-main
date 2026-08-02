@@ -394,17 +394,21 @@ docker compose -f docker-compose.kafka.yml exec kafka1 ./kafka-topics.sh \
   --partitions 3 --replication-factor 3
 ```
 
-Gửi sáu event:
+Gửi sáu event với ba key. Với topic ba partition, ba key này được chọn để rơi vào ba partition khác nhau trong Kafka Java partitioner:
 
 ```bash
-printf 'order-01 created\norder-02 paid\norder-03 created\norder-04 shipped\norder-05 paid\norder-06 cancelled\n' \
+printf 'order-06:created-A\norder-05:created-B\norder-01:created-C\norder-06:paid-A\norder-05:paid-B\norder-01:paid-C\n' \
   | docker compose -f docker-compose.kafka.yml exec -T kafka1 \
       ./kafka-console-producer.sh \
       --bootstrap-server kafka1:19092 \
-      --topic pubsub-lab
+      --topic pubsub-lab \
+      --reader-property parse.key=true \
+      --reader-property key.separator=:
 ```
 
-**Giải thích lệnh producer:** `printf` tạo sáu dòng input; toán tử `|` chuyển chúng vào standard input của producer; `exec -T` tắt pseudo-TTY để pipe hoạt động ổn định. Mỗi dòng trở thành một record có value và không có key.
+**Giải thích lệnh producer:** `printf` tạo sáu dòng input; toán tử `|` chuyển chúng vào standard input của producer; `exec -T` tắt pseudo-TTY để pipe hoạt động ổn định. `parse.key=true` và dấu `:` tách key khỏi value. Cùng key luôn vào cùng partition; ba key đã chọn tạo hai record trên mỗi partition, giúp dễ quan sát hai worker chia tải.
+
+> Nếu gửi record **không có key**, producer có thể gom cả batch vào một partition. Khi đó toàn bộ năm hoặc sáu order xuất hiện ở một worker là đúng: Kafka chia partition cho worker, không chia luân phiên từng message.
 
 ### A4.2. Hai subscriber đều nhận đủ event
 
@@ -467,7 +471,7 @@ Các cột thường dùng:
 
 Dừng một worker bằng `Ctrl+C`; sau vài giây worker còn lại nhận các partition qua rebalance. Với ba partition, tối đa ba worker có việc; worker thứ tư sẽ không được gán partition.
 
-> ✅ **Đầu ra dự kiến:** Hai worker nhận các phần event khác nhau; bảng group có ba partition được chia giữa hai `CONSUMER-ID`. Số message có thể lệch, ví dụ `5/1`, vì Kafka chia **partition** chứ không chia đều từng message. Khi một worker dừng, worker còn lại giữ cả ba partition và `LAG` dần về `0`.
+> ✅ **Đầu ra dự kiến:** Hai worker nhận các phần event khác nhau; bảng group có ba partition được chia giữa hai `CONSUMER-ID`. Với hai record trên mỗi partition, hai worker thường chia `4/2` vì một worker giữ hai partition và worker kia giữ một. Khi một worker dừng, worker còn lại giữ cả ba partition và `LAG` dần về `0`.
 >
 > **Tại sao:** trong cùng group, một partition chỉ được gán cho một member tại một thời điểm. Membership thay đổi khiến group coordinator chạy rebalance.
 

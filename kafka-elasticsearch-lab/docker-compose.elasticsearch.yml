@@ -1,74 +1,87 @@
-name: elasticsearch-lab
-
-x-es-common: &es-common
-  image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
-  restart: unless-stopped
-  environment: &es-environment
-    cluster.name: elasticsearch-lab
-    discovery.seed_hosts: es01,es02,es03
-    cluster.initial_master_nodes: es01,es02,es03
-    xpack.security.enabled: "false"
-    path.repo: /snapshots
-    ES_JAVA_OPTS: -Xms768m -Xmx768m
-  healthcheck: &es-healthcheck
-    test: ["CMD-SHELL", "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null"]
-    interval: 10s
-    timeout: 5s
-    retries: 30
-    start_period: 50s
-
+version: "2.2"
 services:
   es-setup:
-    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
-    user: "0"
-    command: ["/bin/bash", "-c", "chown -R 1000:0 /snapshots && chmod 0770 /snapshots"]
+    image: busybox
+    command: sh -c "chown -R 1000:1000 /snapshots || true"
     volumes:
       - es_snapshots:/snapshots
 
   es01:
-    <<: *es-common
-    hostname: es01
-    ports:
-      - "127.0.0.1:${ES_PORT:-9200}:9200"
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
+    container_name: es01
     environment:
-      <<: *es-environment
-      node.name: es01
+      - node.name=es01
+      - cluster.name=elasticsearch-lab
+      - discovery.seed_hosts=es01,es02,es03
+      - cluster.initial_master_nodes=es01,es02,es03
+      - ES_JAVA_OPTS=-Xms768m -Xmx768m
+      - xpack.security.enabled=false
+      - path.repo=/snapshots
     volumes:
       - es01_data:/usr/share/elasticsearch/data
       - es_snapshots:/snapshots
+    ports:
+      - "127.0.0.1:9200:9200"
     depends_on:
       es-setup:
         condition: service_completed_successfully
 
   es02:
-    <<: *es-common
-    hostname: es02
-    ports:
-      - "127.0.0.1:${ES_PORT_2:-9201}:9200"
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
+    container_name: es02
     environment:
-      <<: *es-environment
-      node.name: es02
+      - node.name=es02
+      - cluster.name=elasticsearch-lab
+      - discovery.seed_hosts=es01,es02,es03
+      - cluster.initial_master_nodes=es01,es02,es03
+      - ES_JAVA_OPTS=-Xms768m -Xmx768m
+      - xpack.security.enabled=false
+      - path.repo=/snapshots
     volumes:
       - es02_data:/usr/share/elasticsearch/data
       - es_snapshots:/snapshots
+    ports:
+      - "127.0.0.1:9201:9200"
     depends_on:
       es-setup:
         condition: service_completed_successfully
 
   es03:
-    <<: *es-common
-    hostname: es03
-    ports:
-      - "127.0.0.1:${ES_PORT_3:-9202}:9200"
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
+    container_name: es03
     environment:
-      <<: *es-environment
-      node.name: es03
+      - node.name=es03
+      - cluster.name=elasticsearch-lab
+      - discovery.seed_hosts=es01,es02,es03
+      - cluster.initial_master_nodes=es01,es02,es03
+      - ES_JAVA_OPTS=-Xms768m -Xmx768m
+      - xpack.security.enabled=false
+      - path.repo=/snapshots
     volumes:
       - es03_data:/usr/share/elasticsearch/data
       - es_snapshots:/snapshots
+    ports:
+      - "127.0.0.1:9202:9200"
     depends_on:
       es-setup:
         condition: service_completed_successfully
+
+  kibana:
+      image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-8.19.19}
+      container_name: kibana
+      environment:
+        - ELASTICSEARCH_HOSTS=["http://es01:9200","http://es02:9200","http://es03:9200"]
+        - SERVER_NAME=kibana-lab
+        - ELASTICSEARCH_REQUESTTIMEOUT=90000
+      ports:
+        - "127.0.0.1:5601:5601"
+      depends_on:
+        es01:
+          condition: service_started
+        es02:
+          condition: service_started
+        es03:
+          condition: service_started
 
 volumes:
   es01_data:
