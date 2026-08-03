@@ -28,6 +28,9 @@ x-kafka-common: &kafka-common
     timeout: 10s
     retries: 18
     start_period: 30s
+  depends_on:
+    kafka-setup:
+      condition: service_completed_successfully
 
 x-es-common: &es-common
   image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.19}
@@ -54,6 +57,16 @@ x-es-common: &es-common
     start_period: 50s
 
 services:
+  kafka-setup:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    user: "0"
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["chown -R 1000:1000 /kafka1 /kafka2 /kafka3"]
+    volumes:
+      - kafka1_data:/kafka1
+      - kafka2_data:/kafka2
+      - kafka3_data:/kafka3
+
   kafka1:
     <<: *kafka-common
     hostname: kafka1
