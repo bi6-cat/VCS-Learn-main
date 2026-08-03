@@ -1,0 +1,23 @@
+{
+  "topic": "order-events",
+  "key": "order-9001",
+  "value": {
+    "eventType": "OrderCreated",
+    "customerId": "customer-1024",
+    "total": 1250000
+  },
+  "timestamp": "2026-07-26T10:15:30+07:00",
+  "headers": {
+    "trace-id": "7f1e...",
+    "schema-version": "2"
+  }
+}
+
+{
+  "eventId": "evt-10001",
+  "eventType": "OrderCreated",
+  "orderId": "order-9001",
+  "customerId": "customer-1024",
+  "totalAmount": 1250000,
+  "occurredAt": "2026-07-26T09:30:00+07:00"
+}
